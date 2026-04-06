@@ -1,0 +1,15 @@
+.DS_Store
+.idea/
+*.log
+
+# Node modules
+backend/node_modules/
+frontend/node_modules/
+
+# Local env files
+.env
+backend/.env
+frontend/.env
+
+# Generated files
+backend/presentations/
