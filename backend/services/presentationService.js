@@ -1,4 +1,4 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const PptxGenJS = require('pptxgenjs');
@@ -6,30 +6,59 @@ const { OpenAI } = require('openai');
 require('dotenv').config();
 
 const presentationsDir = path.join(__dirname, '../presentations');
+const imagesDir = path.join(presentationsDir, 'images');
 if (!fs.existsSync(presentationsDir)) {
   fs.mkdirSync(presentationsDir, { recursive: true });
 }
+if (!fs.existsSync(imagesDir)) {
+  fs.mkdirSync(imagesDir, { recursive: true });
+}
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const openaiModel = process.env.OPENAI_API_MODEL || 'gpt-3.5-turbo';
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
-const parseJsonArray = (rawText) => {
-  const trimmed = rawText.trim();
-  try {
+const cleanText = (value) => {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ');
+};
+
+const parseOpenAIResponse = (rawText) => {
+  const text = rawText?.toString().trim() || '';
+  if (!text) throw new Error('OpenAI returned empty response');
+
+  const tryParse = (candidate) => {
+    const trimmed = candidate.trim();
+    if (!trimmed) throw new Error('No JSON content available');
     return JSON.parse(trimmed);
-  } catch (error) {
-    const start = trimmed.indexOf('[');
-    const end = trimmed.lastIndexOf(']');
-    if (start !== -1 && end !== -1 && end > start) {
-      return JSON.parse(trimmed.slice(start, end + 1));
+  };
+
+  try {
+    return tryParse(text);
+  } catch {
+    const arrayStart = text.indexOf('[');
+    const arrayEnd = text.lastIndexOf(']');
+    if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+      return tryParse(text.slice(arrayStart, arrayEnd + 1));
     }
-    throw new Error('Unable to parse JSON from OpenAI response');
+
+    const objectStart = text.indexOf('{');
+    const objectEnd = text.lastIndexOf('}');
+    if (objectStart !== -1 && objectEnd !== -1 && objectEnd > objectStart) {
+      const payload = tryParse(text.slice(objectStart, objectEnd + 1));
+      return payload.slides && Array.isArray(payload.slides) ? payload.slides : payload;
+    }
+
+    throw new Error('Unable to locate JSON inside OpenAI response');
   }
 };
 
 const fetchSlideImage = async (keyword, index) => {
-  const searchUrl = `https://source.unsplash.com/1600x900/?${encodeURIComponent(keyword)}`;
+  if (!keyword) return null;
+  const imageUrl = `https://source.unsplash.com/1600x900/?${encodeURIComponent(keyword)}`;
+
   try {
-    const response = await axios.get(searchUrl, {
+    const response = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       maxRedirects: 5,
       timeout: 20000
@@ -38,220 +67,296 @@ const fetchSlideImage = async (keyword, index) => {
     const contentType = response.headers['content-type'] || 'image/jpeg';
     const extension = contentType.includes('png') ? 'png' : 'jpg';
     const filename = `slide_image_${Date.now()}_${index}.${extension}`;
-    const filepath = path.join(presentationsDir, filename);
+    const filepath = path.join(imagesDir, filename);
+
     fs.writeFileSync(filepath, response.data);
     return filepath;
   } catch (error) {
-    console.error(`Failed to fetch image for keyword "${keyword}":`, error.message || error);
+    console.error(`Image fetch failed for keyword "${keyword}":`, error.message || error);
     return null;
   }
 };
 
 const generateFallbackContent = (prompt) => {
-  const title = `Presentation: ${prompt}`;
-  const fallbackSlides = [
-    {
-      title: 'Introduction',
-      bulletPoints: ['Purpose of the presentation', 'Audience and goals', 'Why this topic matters'],
-      imageSearchKeyword: 'presentation'
-    },
-    {
-      title: 'Problem',
-      bulletPoints: ['Current challenges', 'Key pain points', 'Why this problem needs solving'],
-      imageSearchKeyword: 'problem solving'
-    },
-    {
-      title: 'Solution',
-      bulletPoints: ['How the solution works', 'Main benefits', 'What makes it unique'],
-      imageSearchKeyword: 'solution'
-    },
-    {
-      title: 'How It Works',
-      bulletPoints: ['Core process overview', 'Key features', 'User experience'],
-      imageSearchKeyword: 'workflow'
-    },
-    {
-      title: 'Market Opportunity',
-      bulletPoints: ['Target audience', 'Market size', 'Growth potential'],
-      imageSearchKeyword: 'market research'
-    },
-    {
-      title: 'Benefits',
-      bulletPoints: ['Value proposition', 'Why people care', 'Expected impact'],
-      imageSearchKeyword: 'business benefits'
-    },
-    {
-      title: 'Implementation',
-      bulletPoints: ['Key milestones', 'Timeline', 'Next steps'],
-      imageSearchKeyword: 'roadmap'
-    },
-    {
-      title: 'Conclusion',
-      bulletPoints: ['Summary of takeaways', 'Final recommendation', 'Call to action'],
-      imageSearchKeyword: 'conclusion'
-    }
-  ];
+  const title = prompt ? `Presentation: ${cleanText(prompt)}` : 'AI Presentation';
+  return {
+    title,
+    slides: [
+      {
+        title: 'Overview',
+        bulletPoints: [
+          `Introducing: ${cleanText(prompt)}`,
+          'What this presentation will cover',
+          'Why this topic matters',
+          'How the audience will benefit'
+        ],
+        imageSearchKeyword: 'presentation outline'
+      },
+      {
+        title: 'The Challenge',
+        bulletPoints: [
+          'Current challenges or gaps',
+          'Why improvement is required',
+          'Who is affected',
+          'What success looks like'
+        ],
+        imageSearchKeyword: 'problem solving'
+      },
+      {
+        title: 'The Solution',
+        bulletPoints: [
+          'What the solution is',
+          'How it works',
+          'Key advantages',
+          'Why it is better than alternatives'
+        ],
+        imageSearchKeyword: 'innovative solution'
+      },
+      {
+        title: 'How It Works',
+        bulletPoints: [
+          'Step-by-step workflow',
+          'Core components',
+          'User experience highlights',
+          'Results expected'
+        ],
+        imageSearchKeyword: 'workflow diagram'
+      },
+      {
+        title: 'Benefits',
+        bulletPoints: [
+          'Top benefit 1',
+          'Top benefit 2',
+          'Why stakeholders care',
+          'Expected impact'
+        ],
+        imageSearchKeyword: 'business benefits'
+      },
+      {
+        title: 'Implementation',
+        bulletPoints: [
+          'Next steps',
+          'Timeline overview',
+          'Key milestones',
+          'Resources needed'
+        ],
+        imageSearchKeyword: 'roadmap'
+      },
+      {
+        title: 'Results',
+        bulletPoints: [
+          'Measurable outcomes',
+          'Success indicators',
+          'Expected timeline',
+          'Future opportunities'
+        ],
+        imageSearchKeyword: 'successful project'
+      },
+      {
+        title: 'Conclusion',
+        bulletPoints: [
+          'Summary of the presentation',
+          'Final thoughts',
+          'Call to action',
+          'Next steps for the audience'
+        ],
+        imageSearchKeyword: 'conclusion slide'
+      }
+    ]
+  };
+};
+
+const generateSlidesFromOpenAI = async (prompt) => {
+  if (!openai) {
+    throw new Error('OpenAI API key is not configured. Set OPENAI_API_KEY in backend/.env');
+  }
+
+  const systemPrompt = `You are an expert presentation creator. Return only valid JSON with exactly 8 to 10 slide objects. Each slide object must have the keys: title, bulletPoints, imageSearchKeyword. Example format: [{"title":"Slide title","bulletPoints":["Point 1","Point 2"],"imageSearchKeyword":"keyword"}]`;
+  const userPrompt = `Create a professional presentation outline for the topic: ${prompt}`;
+
+  const response = await openai.chat.completions.create({
+    model: openaiModel,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature: 0.6,
+    max_tokens: 1100
+  });
+
+  const raw = response?.choices?.[0]?.message?.content;
+  const parsed = parseOpenAIResponse(raw);
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (parsed && parsed.slides && Array.isArray(parsed.slides)) {
+    return parsed.slides;
+  }
+
+  throw new Error('OpenAI response did not contain a valid slide array');
+};
+
+const normalizeSlide = async (slide, index) => {
+  const title = cleanText(slide.title) || `Slide ${index + 1}`;
+  const bulletPoints = Array.isArray(slide.bulletPoints)
+    ? slide.bulletPoints.slice(0, 5).map((point) => cleanText(point)).filter(Boolean)
+    : [];
+  const imageSearchKeyword = cleanText(slide.imageSearchKeyword) || title;
+  const imagePath = await fetchSlideImage(imageSearchKeyword, index + 1);
 
   return {
     title,
-    slides: fallbackSlides
+    bulletPoints: bulletPoints.length > 0 ? bulletPoints : ['Key point 1', 'Key point 2', 'Key point 3'],
+    imageSearchKeyword,
+    imagePath
   };
 };
 
 const generatePresentationContent = async (prompt) => {
   if (!prompt || !prompt.trim()) {
-    throw new Error('Prompt is required to generate presentation content');
+    throw new Error('Prompt is required');
   }
 
   try {
-    const systemMessage = `You are a professional presentation designer. Generate a JSON array with exactly 8 to 10 slide objects. Each object must have exactly these keys:\n- title: a short slide title\n- bulletPoints: an array of 3 to 5 concise bullet points\n- imageSearchKeyword: one single keyword or short phrase to search for an image\nReturn only valid JSON, with no markdown, commentary, or extra fields.`;
-    const userMessage = `Create a presentation outline for the following prompt:\n${prompt}`;
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [
-        { role: 'system', content: systemMessage },
-        { role: 'user', content: userMessage }
-      ],
-      temperature: 0.6,
-      max_tokens: 1000
-    });
-
-    const rawText = response.choices?.[0]?.message?.content || '';
-    const slides = parseJsonArray(rawText);
-
+    const slides = await generateSlidesFromOpenAI(prompt);
     if (!Array.isArray(slides) || slides.length < 8 || slides.length > 10) {
-      throw new Error('OpenAI returned invalid slide output. Expected 8 to 10 items.');
+      throw new Error('OpenAI returned invalid slide count');
     }
 
-    const normalizedSlides = await Promise.all(slides.map(async (slide, index) => {
-      if (!slide || typeof slide !== 'object') {
-        throw new Error(`Slide ${index + 1} is not a valid object`);
-      }
-
-      const title = typeof slide.title === 'string' && slide.title.trim() ? slide.title.trim() : `Slide ${index + 1}`;
-      const bulletPoints = Array.isArray(slide.bulletPoints)
-        ? slide.bulletPoints.slice(0, 5).map((point) => String(point).trim()).filter(Boolean)
-        : [];
-      const imageSearchKeyword = typeof slide.imageSearchKeyword === 'string' && slide.imageSearchKeyword.trim()
-        ? slide.imageSearchKeyword.trim()
-        : title;
-
-      const imagePath = await fetchSlideImage(imageSearchKeyword, index + 1);
-
-      return {
-        title,
-        bulletPoints: bulletPoints.length > 0 ? bulletPoints : ['Key point 1', 'Key point 2', 'Key point 3'],
-        imageSearchKeyword,
-        imagePath
-      };
-    }));
-
+    const normalizedSlides = await Promise.all(slides.map(normalizeSlide));
     return {
-      title: `Presentation: ${prompt}`,
+      title: `Presentation: ${cleanText(prompt)}`,
       slides: normalizedSlides
     };
   } catch (error) {
-    console.error('OpenAI slide generation failed:', error.message || error);
+    console.error('AI generation failed, using fallback content:', error.message || error);
     return generateFallbackContent(prompt);
   }
 };
 
 const createPowerPoint = async (content, filename) => {
   const pres = new PptxGenJS();
-  const theme = {
-    primary: '#6366f1',
-    secondary: '#ec4899',
-    accent: '#f59e0b',
-    darkBg: '#1f2937',
-    lightBg: '#f9fafb',
-    text: '#111827',
-    lightText: '#ffffff'
-  };
+
+  console.log('Creating PowerPoint for:', { title: content.title, slideCount: content.slides.length });
+  
+  // Validate slide content types
+  content.slides.forEach((slide, i) => {
+    if (typeof slide.title !== 'string') console.warn(`Slide ${i} title not string:`, typeof slide.title);
+    if (Array.isArray(slide.bulletPoints)) {
+      slide.bulletPoints.forEach((point, j) => {
+        if (typeof point !== 'string') console.warn(`Slide ${i} point ${j} not string:`, typeof point);
+      });
+    }
+  });
 
   const titleSlide = pres.addSlide();
-  titleSlide.background = { fill: { type: 'solid', color: theme.darkBg } };
+  titleSlide.background = '#111827';
   titleSlide.addText(content.title || 'AI Generated Presentation', {
-    x: 0.5, y: 2.0, w: 9, h: 1.5,
-    fontSize: 48,
+    x: 0.5,
+    y: 1.5,
+    w: 9,
+    h: 1.5,
+    fontSize: 44,
     bold: true,
-    color: theme.lightText,
+    color: '#ffffff',
     align: 'center',
     fontFace: 'Arial'
   });
-  titleSlide.addText('Generated from your prompt', {
-    x: 0.5, y: 3.6, w: 9, h: 0.9,
-    fontSize: 24,
-    color: theme.secondary,
+  titleSlide.addText('Created from your prompt', {
+    x: 0.5,
+    y: 3.2,
+    w: 9,
+    h: 0.7,
+    fontSize: 22,
+    color: '#ec4899',
     align: 'center',
     fontFace: 'Arial'
   });
 
   content.slides.forEach((slide, index) => {
-    const slideObj = pres.addSlide();
-    slideObj.background = { fill: theme.lightBg };
+    try {
+      console.log(`Processing slide ${index + 1}:`, { title: slide.title, bulletPoints: slide.bulletPoints?.length, imagePath: slide.imagePath });
+      
+      const slideObj = pres.addSlide();
+      slideObj.background = '#f8fafc';
 
-    slideObj.addShape(pres.ShapeType.rect, {
-      x: 0, y: 0, w: '100%', h: 0.7,
-      fill: { type: 'solid', color: theme.primary },
-      line: { type: 'none' }
-    });
+      slideObj.addShape(pres.ShapeType.rect, {
+        x: 0,
+        y: 0,
+        w: '100%',
+        h: 0.65,
+        fill: '#4f46e5'
+      });
 
-    slideObj.addText(slide.title || `Slide ${index + 1}`, {
-      x: 0.5, y: 0.1, w: 9, h: 0.7,
-      fontSize: 32,
-      bold: true,
-      color: theme.darkBg,
-      fontFace: 'Arial'
-    });
+      slideObj.addText(slide.title || `Slide ${index + 1}`, {
+        x: 0.5,
+        y: 0.1,
+        w: 9,
+        h: 0.6,
+        fontSize: 30,
+        bold: true,
+        color: '#ffffff',
+        fontFace: 'Arial'
+      });
 
-    const hasImage = Boolean(slide.imagePath);
-    if (hasImage) {
-      try {
-        slideObj.addImage({
-          path: slide.imagePath,
-          x: 5.0, y: 1.1, w: 4.0, h: 3.0
-        });
-      } catch (imageError) {
-        console.error(`Unable to render image on slide ${index + 1}:`, imageError.message || imageError);
+      const hasImage = Boolean(slide.imagePath);
+      if (hasImage) {
+        try {
+          slideObj.addImage({
+            path: slide.imagePath,
+            x: 5.0,
+            y: 1.0,
+            w: 4.0,
+            h: 3.0
+          });
+        } catch (imageError) {
+          console.error(`Unable to add image to slide ${index + 1}:`, imageError.message || imageError);
+        }
       }
+
+      const bodyWidth = hasImage ? 4.5 : 9.0;
+      slideObj.addText(slide.bulletPoints.map((item) => `• ${item}`).join('\n'), {
+        x: 0.5,
+        y: 1.1,
+        w: bodyWidth,
+        h: 4.8,
+        fontSize: 18,
+        color: '#111827',
+        fontFace: 'Arial'
+      });
+
+      slideObj.addShape(pres.ShapeType.rect, {
+        x: 0,
+        y: 6.8,
+        w: '100%',
+        h: 0.1,
+        fill: '#ec4899'
+      });
+
+      slideObj.addText(`Slide ${index + 1}`, {
+        x: 9.2,
+        y: 6.85,
+        w: 0.6,
+        h: 0.3,
+        fontSize: 12,
+        color: '#4f46e5',
+        align: 'right',
+        fontFace: 'Arial'
+      });
+    } catch (slideError) {
+      console.error(`Error processing slide ${index + 1}:`, slideError.message);
+      throw slideError;
     }
-
-    const contentX = 0.5;
-    const contentW = hasImage ? 4.4 : 9.0;
-    slideObj.addText(slide.bulletPoints.map((point) => `• ${point}`).join('\n'), {
-      x: contentX,
-      y: 1.1,
-      w: contentW,
-      h: 4.8,
-      fontSize: 18,
-      color: theme.text,
-      fontFace: 'Arial',
-      bullet: true,
-      bulletChar: '\u2022',
-      lineSpacing: 20
-    });
-
-    slideObj.addShape(pres.ShapeType.rect, {
-      x: 0, y: 6.8, w: '100%', h: 0.1,
-      fill: { type: 'solid', color: theme.secondary },
-      line: { type: 'none' }
-    });
-
-    slideObj.addText(`Slide ${index + 1}`, {
-      x: 9.2, y: 6.85, w: 0.6, h: 0.3,
-      fontSize: 12,
-      color: theme.primary,
-      align: 'right',
-      fontFace: 'Arial'
-    });
   });
 
-  await pres.writeFile(filename);
+  await pres.writeFile({ fileName: filename });
   return filename;
 };
 
 module.exports = {
   generatePresentationContent,
-  createPowerPoint
+  createPowerPoint,
+  generateFallbackContent
 };

@@ -2,7 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
-const { generatePresentationContent, createPowerPoint } = require('../services/presentationService');
+const { generatePresentationContent, createPowerPoint, generateFallbackContent } = require('../services/presentationService');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -37,7 +37,13 @@ const presentationController = {
       // Create PowerPoint file
       const presentationId = require('crypto').randomBytes(8).toString('hex');
       const filename = path.join(presentationsDir, `presentation_${presentationId}.pptx`);
-      await createPowerPoint(content, filename);
+      try {
+        await createPowerPoint(content, filename);
+      } catch (pptxError) {
+        console.error('PowerPoint generation failed, retrying with fallback content:', pptxError);
+        const fallbackContent = generateFallbackContent(prompt);
+        await createPowerPoint(fallbackContent, filename);
+      }
 
       // Save to database (optional)
       try {
