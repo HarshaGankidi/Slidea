@@ -1,8 +1,10 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
-const { generatePresentationContent, createPowerPoint, generateFallbackContent } = require('../services/presentationService');
+const { PDFParse } = require('pdf-parse');
+const { generatePresentationContent, createPowerPointBuffer } = require('../services/presentationService');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -11,17 +13,21 @@ const pool = new Pool({
   }
 });
 
-// Create presentations directory if it doesn't exist
 const presentationsDir = path.join(__dirname, '../presentations');
 if (!fs.existsSync(presentationsDir)) {
   fs.mkdirSync(presentationsDir, { recursive: true });
 }
 
+const writeSse = (res, payload) => {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
+
 const presentationController = {
-  // Generate a new presentation
   generatePresentation: async (req, res) => {
+    let sseActive = false;
     try {
-      const { prompt, title } = req.body;
+      const prompt = (req.body?.prompt || '').trim();
+      const titleRaw = (req.body?.title || '').trim();
 
       if (!prompt) {
         return res.status(400).json({
@@ -30,61 +36,142 @@ const presentationController = {
         });
       }
 
-      // Generate presentation content
-      const content = await generatePresentationContent(prompt);
-      const generatedTitle = content.title || title || 'Untitled Presentation';
+      sseActive = true;
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-      // Create PowerPoint file
-      const presentationId = require('crypto').randomBytes(8).toString('hex');
-      const filename = path.join(presentationsDir, `presentation_${presentationId}.pptx`);
-      try {
-        await createPowerPoint(content, filename);
-      } catch (pptxError) {
-        console.error('PowerPoint generation failed, retrying with fallback content:', pptxError);
-        const fallbackContent = generateFallbackContent(prompt);
-        await createPowerPoint(fallbackContent, filename);
+      let researchFromPdf = null;
+      if (req.file?.buffer) {
+        writeSse(res, { type: 'status', message: 'Reading PDF Document...' });
+        const parser = new PDFParse({ data: req.file.buffer });
+        try {
+          await parser.load();
+          const textResult = await parser.getText();
+          researchFromPdf = (textResult?.text || '').trim().slice(0, 120000);
+        } finally {
+          await parser.destroy().catch(() => {});
+        }
       }
 
-      // Save to database (optional)
+      const content = await generatePresentationContent(prompt, {
+        researchFromPdf,
+        onStatus: (message) => writeSse(res, { type: 'status', message })
+      });
+
+      const generatedTitle = titleRaw || content.title || 'Untitled Presentation';
+
+      writeSse(res, { type: 'status', message: 'Deck ready — preview on the client.' });
+
+      writeSse(res, {
+        type: 'complete',
+        success: true,
+        data: {
+          title: generatedTitle,
+          slides: content.slides,
+          theme: content.theme,
+          themeName: content.themeName,
+          originalPrompt: content.originalPrompt || prompt
+        }
+      });
+    } catch (error) {
+      console.error('GENERATE ERROR:', error);
+      console.error(error?.stack);
+      if (!sseActive) {
+        return res.status(500).json({
+          success: false,
+          message: error.message || 'Internal Server Error'
+        });
+      }
+      try {
+        writeSse(res, {
+          type: 'error',
+          message: error.message || 'Internal Server Error'
+        });
+      } catch (writeErr) {
+        console.error('SSE error write failed:', writeErr?.message);
+      }
+    } finally {
+      if (sseActive) {
+        try {
+          res.end();
+        } catch (endErr) {
+          console.error('SSE end failed:', endErr?.message);
+        }
+      }
+    }
+  },
+
+  exportPresentation: async (req, res) => {
+    try {
+      const { title, slides, theme, prompt: promptBody } = req.body || {};
+      const promptForDb = typeof promptBody === 'string' ? promptBody.trim() : '';
+
+      if (!Array.isArray(slides) || slides.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Request body must include a non-empty slides array'
+        });
+      }
+
+      const displayTitle =
+        typeof title === 'string' && title.trim() ? title.trim() : 'Untitled Presentation';
+
+      const content = {
+        title: displayTitle,
+        slides,
+        theme: theme && typeof theme === 'object' ? theme : undefined
+      };
+
+      const buffer = await createPowerPointBuffer(content);
+      const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+
+      const presentationId = crypto.randomBytes(8).toString('hex');
+      const filename = `presentation_${presentationId}.pptx`;
+      const filePath = path.join(presentationsDir, filename);
+
+      await fs.promises.writeFile(filePath, nodeBuf);
+
       try {
         const query = `
           INSERT INTO presentations (id, title, prompt, filename, created_at)
           VALUES ($1, $2, $3, $4, NOW())
           RETURNING *;
         `;
-        
         await pool.query(query, [
           presentationId,
-          generatedTitle,
-          prompt,
-          `presentation_${presentationId}.pptx`
+          displayTitle,
+          promptForDb || '(exported deck)',
+          filename
         ]);
-        console.log('Presentation saved to database');
       } catch (dbError) {
-        console.log('Database not available, presentation saved locally only:', dbError.message);
+        console.error('Export saved to disk but database insert failed:', dbError.message);
       }
 
-      res.status(201).json({
-        success: true,
-        message: 'Presentation generated successfully',
-        data: {
-          id: presentationId,
-          title: generatedTitle,
-          prompt: prompt,
-          downloadUrl: `/api/presentations/download/${presentationId}`
-        }
-      });
+      const rawName = displayTitle;
+      const safeName = rawName.replace(/[^\w\s\-]+/g, '').replace(/\s+/g, '-').slice(0, 80) || 'slidea-presentation';
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`);
+      res.send(nodeBuf);
     } catch (error) {
-      console.error("GENERATE ERROR:", error);
+      console.error('EXPORT ERROR:', error);
       console.error(error?.stack);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Internal Server Error'
-      });
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: error.message || 'Failed to export presentation'
+        });
+      }
     }
   },
 
-  // Get presentation history
   getPresentationHistory: async (req, res) => {
     try {
       const query = `
@@ -102,7 +189,6 @@ const presentationController = {
         });
       } catch (dbError) {
         console.log('Database not available, returning empty history:', dbError.message);
-        // Return empty array if database is not available
         res.json({
           success: true,
           data: []
@@ -118,14 +204,12 @@ const presentationController = {
     }
   },
 
-  // Download a presentation
   downloadPresentation: async (req, res) => {
     try {
       const { id } = req.params;
 
       const filename = path.join(presentationsDir, `presentation_${id}.pptx`);
 
-      // Check if file exists
       if (!fs.existsSync(filename)) {
         return res.status(404).json({
           success: false,
@@ -133,7 +217,6 @@ const presentationController = {
         });
       }
 
-      // Send file
       res.download(filename, `presentation_${id}.pptx`, (err) => {
         if (err) {
           console.error('Error downloading file:', err);

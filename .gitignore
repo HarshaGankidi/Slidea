@@ -2,14 +2,19 @@
 .idea/
 *.log
 
-# Node modules
+# Dependencies
+node_modules/
 backend/node_modules/
 frontend/node_modules/
 
-# Local env files — never commit API keys or secrets
+# Secrets — never commit API keys
 .env
 backend/.env
 frontend/.env
 
-# Generated files
+# Generated presentations (.pptx) and local uploads folder
 backend/presentations/
+**/*.pptx
+
+# Local PDF fixtures / test uploads (keep secrets and binaries out of git)
+*.pdf
