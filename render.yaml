@@ -28,7 +28,7 @@ services:
     region: oregon
     rootDir: frontend
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: npx serve -s dist
     envVars:
       - key: NODE_VERSION
         value: "20"
