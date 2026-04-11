@@ -67,131 +67,132 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div className="bg-slate-50 py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
         {/* Hero Section */}
         <div className="text-center mb-12">
-          <h2 className="text-5xl font-bold text-gray-900 mb-4">
+          <h2 className="text-4xl sm:text-5xl font-extrabold text-gray-900 mb-6 leading-tight">
             Create Presentations <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-pink-600">Instantly</span>
           </h2>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            Just describe what you need, and our AI will generate a professional presentation for you in seconds.
+          <p className="text-lg sm:text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed">
+            Just describe what you need, and our AI will research the topic and design a professional pitch deck for you.
           </p>
         </div>
 
         {/* Main Form Card */}
-        <div className="bg-white rounded-2xl shadow-2xl p-8 mb-8">
-          <form onSubmit={handleSubmit}>
-            {/* Title Input */}
-            <div className="mb-6">
-              <label className="block text-sm font-semibold text-gray-700 mb-3">
-                Presentation Title (Optional)
-              </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Product Pitch Deck 2024"
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-100 transition-all"
-              />
-            </div>
-
-            {/* Prompt Textarea */}
-            <div className="mb-6">
-              <label className="block text-sm font-semibold text-gray-700 mb-3">
-                Describe Your Presentation
-              </label>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Example: Create a pitch deck for my EdTech startup that focuses on personalized learning. Include sections on the problem, solution, market opportunity, and business model."
-                className="w-full h-48 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-100 transition-all resize-none"
-              />
-            </div>
-
-            {/* Quick Template Buttons */}
-            <div className="mb-6">
-              <p className="text-sm font-semibold text-gray-700 mb-3">Quick Templates:</p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
-                  { text: '📊 Startup Pitch', value: 'Create a pitch deck for my startup. Include executive summary, problem statement, solution, market opportunity, business model, team, and funding requirements.' },
-                  { text: '🎓 EdTech Platform', value: 'Create a presentation for my EdTech platform. Cover current education challenges, our vision, key features, impact metrics, and call to action.' },
-                  { text: '💼 Business Plan', value: 'Create a comprehensive business plan presentation with company overview, market analysis, financial projections, and growth strategy.' }
-                ].map((template, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => setPrompt(template.value)}
-                    className="px-4 py-2 bg-gray-100 hover:bg-indigo-100 text-gray-800 rounded-lg font-medium transition-all transform hover:scale-105"
-                  >
-                    {template.text}
-                  </button>
-                ))}
+        <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden mb-12">
+          <div className="p-8 sm:p-10">
+            <form onSubmit={handleSubmit} className="space-y-8">
+              {/* Title Input */}
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wider">
+                  Presentation Title
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="e.g., The Future of Personalized Learning"
+                  className="w-full px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:outline-none focus:border-indigo-500 focus:bg-white transition-all text-gray-900 font-medium"
+                />
               </div>
-            </div>
 
-            {/* Error Message */}
-            {error && (
-              <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-lg text-red-700 font-medium">
-                ⚠️ {error}
+              {/* Prompt Textarea */}
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wider">
+                  Describe Your Vision
+                </label>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Describe your startup, business idea, or topic in detail. The AI will research and structure it for you."
+                  className="w-full h-56 px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:outline-none focus:border-indigo-500 focus:bg-white transition-all resize-none text-gray-900 font-medium leading-relaxed"
+                />
               </div>
-            )}
 
-            {/* Success Message */}
-            {success && (
-              <div className="mb-6 p-4 bg-green-50 border-2 border-green-200 rounded-lg text-green-700 font-medium">
-                ✅ {success}
+              {/* Quick Template Buttons */}
+              <div>
+                <p className="text-xs font-bold text-gray-500 mb-4 uppercase tracking-widest text-center">Or start with a template</p>
+                <div className="flex flex-wrap justify-center gap-3">
+                  {[
+                    { text: '📊 Startup Pitch', value: 'Create a professional startup pitch deck focusing on problem, solution, and market traction.' },
+                    { text: '🎓 EdTech Vision', value: 'A presentation for an EdTech platform covering education challenges and innovative solutions.' },
+                    { text: '💼 Business Plan', value: 'A comprehensive business growth strategy with market analysis and financial goals.' }
+                  ].map((template, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setPrompt(template.value)}
+                      className="px-5 py-2.5 bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-700 rounded-full text-sm font-bold transition-all transform hover:scale-105 active:scale-95"
+                    >
+                      {template.text}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={loading}
-              className={`w-full py-4 px-6 rounded-lg font-bold text-white text-lg transition-all transform ${
-                loading
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-indigo-600 to-pink-600 hover:shadow-lg hover:scale-105'
-              }`}
-            >
-              {loading ? (
-                <span className="flex items-center justify-center">
-                  <span className="animate-spin mr-3">⚙️</span>
-                  Generating Your Presentation...
-                </span>
-              ) : (
-                <span>🚀 Generate Presentation</span>
+              {/* Error/Success Messages */}
+              {error && (
+                <div className="p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg text-red-800 font-medium flex items-center">
+                  <span className="mr-3 text-xl">⚠️</span> {error}
+                </div>
               )}
-            </button>
-          </form>
+
+              {success && (
+                <div className="p-4 bg-green-50 border-l-4 border-green-500 rounded-r-lg text-green-800 font-medium flex items-center animate-pulse">
+                  <span className="mr-3 text-xl">✅</span> {success}
+                </div>
+              )}
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading}
+                className={`w-full py-5 px-8 rounded-2xl font-black text-white text-xl uppercase tracking-widest shadow-xl transition-all transform active:scale-95 ${
+                  loading
+                    ? 'bg-gray-300 cursor-not-allowed overflow-hidden'
+                    : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:shadow-indigo-200 hover:scale-[1.02]'
+                }`}
+              >
+                {loading ? (
+                  <div className="flex items-center justify-center">
+                    <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin mr-4"></div>
+                    Researching & Designing...
+                  </div>
+                ) : (
+                  <span>Create My Pitch Deck</span>
+                )}
+              </button>
+            </form>
+          </div>
         </div>
 
         {/* Features Section */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           {[
             {
-              icon: '⚡',
-              title: 'Lightning Fast',
-              description: 'Generate stunning presentations in just seconds'
+              icon: '🌐',
+              title: 'Real Research',
+              desc: 'Live data fetching from Wikipedia ensures your presentation is factually grounded.'
             },
             {
-              icon: '🎨',
-              title: 'Beautiful Design',
-              description: 'Professional templates with elegant color schemes'
+              icon: '✨',
+              title: 'VC Aesthetic',
+              desc: 'High-end design language inspired by elite Venture Capital pitch decks.'
             },
             {
               icon: '📥',
-              title: 'Easy Download',
-              description: 'Download as PowerPoint and customize further'
+              title: 'PowerPoint Ready',
+              desc: 'Fully editable .pptx files that you can customize and present anywhere.'
             }
           ].map((feature, idx) => (
             <div
               key={idx}
-              className="bg-white rounded-xl shadow-lg p-6 text-center hover:shadow-xl transition-all transform hover:scale-105"
+              className="bg-white p-8 rounded-3xl shadow-lg border border-gray-50 hover:border-indigo-100 transition-all text-center group"
             >
-              <div className="text-4xl mb-3">{feature.icon}</div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">{feature.title}</h3>
-              <p className="text-gray-600">{feature.description}</p>
+              <div className="text-5xl mb-4 group-hover:scale-110 transition-transform">{feature.icon}</div>
+              <h3 className="text-xl font-black text-gray-900 mb-3 uppercase tracking-tight">{feature.title}</h3>
+              <p className="text-gray-500 leading-relaxed font-medium">{feature.desc}</p>
             </div>
           ))}
         </div>

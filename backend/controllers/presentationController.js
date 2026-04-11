@@ -75,11 +75,11 @@ const presentationController = {
         }
       });
     } catch (error) {
-      console.error('Error generating presentation:', error);
+      console.error("GENERATE ERROR:", error);
+      console.error(error?.stack);
       res.status(500).json({
         success: false,
-        message: 'Error generating presentation',
-        error: error.message
+        message: error.message || 'Internal Server Error'
       });
     }
   },

@@ -1,12 +1,11 @@
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+console.log("ENV CHECK - Loaded Port:", process.env.PORT);
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const { Pool } = require('pg');
-const path = require('path');
 const fs = require('fs');
 
-// Load environment variables
-dotenv.config();
 
 // Initialize Express app
 const app = express();

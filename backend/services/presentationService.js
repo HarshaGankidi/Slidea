@@ -1,358 +1,230 @@
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const PptxGenJS = require('pptxgenjs');
-const { OpenAI } = require('openai');
-require('dotenv').config();
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const presentationsDir = path.join(__dirname, '../presentations');
-const imagesDir = path.join(presentationsDir, 'images');
-if (!fs.existsSync(presentationsDir)) {
-  fs.mkdirSync(presentationsDir, { recursive: true });
-}
-if (!fs.existsSync(imagesDir)) {
-  fs.mkdirSync(imagesDir, { recursive: true });
-}
-
-const openaiApiKey = process.env.OPENAI_API_KEY;
-const openaiModel = process.env.OPENAI_API_MODEL || 'gpt-3.5-turbo';
-const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
-
-const cleanText = (value) => {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/\s+/g, ' ');
+const THEME = {
+  dark: '#050A1F',
+  light: '#F4F4F5',
+  pink: '#FF0055',
+  white: '#FFFFFF',
+  gray: '#8892B0'
 };
 
-const parseOpenAIResponse = (rawText) => {
-  const text = rawText?.toString().trim() || '';
-  if (!text) throw new Error('OpenAI returned empty response');
+const presentationsDir = path.join(__dirname, '../presentations');
+if (!fs.existsSync(presentationsDir)) fs.mkdirSync(presentationsDir, { recursive: true });
 
-  const tryParse = (candidate) => {
-    const trimmed = candidate.trim();
-    if (!trimmed) throw new Error('No JSON content available');
-    return JSON.parse(trimmed);
-  };
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
+const stripHtml = (s) => (typeof s === 'string' ? s.replace(/<[^>]*>/g, '').replace(/&[^;]+;/g, ' ').trim() : '');
+
+const fetchResearch = async (topic) => {
+  const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
+    topic
+  )}&utf8=&format=json&srlimit=1&origin=*`;
   try {
-    return tryParse(text);
-  } catch {
-    const arrayStart = text.indexOf('[');
-    const arrayEnd = text.lastIndexOf(']');
-    if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
-      return tryParse(text.slice(arrayStart, arrayEnd + 1));
-    }
-
-    const objectStart = text.indexOf('{');
-    const objectEnd = text.lastIndexOf('}');
-    if (objectStart !== -1 && objectEnd !== -1 && objectEnd > objectStart) {
-      const payload = tryParse(text.slice(objectStart, objectEnd + 1));
-      return payload.slides && Array.isArray(payload.slides) ? payload.slides : payload;
-    }
-
-    throw new Error('Unable to locate JSON inside OpenAI response');
+    const response = await axios.get(url, {
+      timeout: 12000,
+      headers: { 'User-Agent': 'Slidea/1.0 (+contact@example.com)' }
+    });
+    const snippet = response.data?.query?.search?.[0]?.snippet || '';
+    return stripHtml(snippet);
+  } catch (error) {
+    console.error('Wiki fetch failed:', error.message);
+    return '';
   }
 };
 
-const fetchSlideImage = async (keyword, index) => {
-  if (!keyword) return null;
-  const imageUrl = `https://source.unsplash.com/1600x900/?${encodeURIComponent(keyword)}`;
-
+const parseSlidesJson = (text) => {
+  if (!text || typeof text !== 'string') throw new Error('Empty OpenAI/Gemini response');
   try {
-    const response = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      timeout: 20000
-    });
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.slides)) return parsed.slides;
+  } catch (_) {}
+  const s = text.indexOf('[');
+  const e = text.lastIndexOf(']');
+  if (s !== -1 && e !== -1 && e > s) {
+    const mid = text.slice(s, e + 1);
+    const arr = JSON.parse(mid);
+    if (Array.isArray(arr)) return arr;
+  }
+  throw new Error('Invalid JSON format from AI');
+};
 
-    const contentType = response.headers['content-type'] || 'image/jpeg';
-    const extension = contentType.includes('png') ? 'png' : 'jpg';
-    const filename = `slide_image_${Date.now()}_${index}.${extension}`;
-    const filepath = path.join(imagesDir, filename);
+const buildPollinationsUrl = (keyword) => {
+  const q = `${keyword || 'modern business skyline'} modern professional highly detailed`;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(q)}?width=800&height=800&nologo=true`;
+};
 
-    fs.writeFileSync(filepath, response.data);
-    return filepath;
+const fetchSlideImage = async (keyword) => {
+  if (!keyword) return null;
+  try {
+    const url = buildPollinationsUrl(keyword);
+    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+    const base64 = Buffer.from(response.data).toString('base64');
+    return 'image/jpeg;base64,' + base64;
   } catch (error) {
-    console.error(`Image fetch failed for keyword "${keyword}":`, error.message || error);
+    console.error(`Image fetch failed for "${keyword}":`, error.message);
     return null;
   }
 };
 
-const generateFallbackContent = (prompt) => {
-  const title = prompt ? `Presentation: ${cleanText(prompt)}` : 'AI Presentation';
-  return {
-    title,
-    slides: [
-      {
-        title: 'Overview',
-        bulletPoints: [
-          `Introducing: ${cleanText(prompt)}`,
-          'What this presentation will cover',
-          'Why this topic matters',
-          'How the audience will benefit'
-        ],
-        imageSearchKeyword: 'presentation outline'
-      },
-      {
-        title: 'The Challenge',
-        bulletPoints: [
-          'Current challenges or gaps',
-          'Why improvement is required',
-          'Who is affected',
-          'What success looks like'
-        ],
-        imageSearchKeyword: 'problem solving'
-      },
-      {
-        title: 'The Solution',
-        bulletPoints: [
-          'What the solution is',
-          'How it works',
-          'Key advantages',
-          'Why it is better than alternatives'
-        ],
-        imageSearchKeyword: 'innovative solution'
-      },
-      {
-        title: 'How It Works',
-        bulletPoints: [
-          'Step-by-step workflow',
-          'Core components',
-          'User experience highlights',
-          'Results expected'
-        ],
-        imageSearchKeyword: 'workflow diagram'
-      },
-      {
-        title: 'Benefits',
-        bulletPoints: [
-          'Top benefit 1',
-          'Top benefit 2',
-          'Why stakeholders care',
-          'Expected impact'
-        ],
-        imageSearchKeyword: 'business benefits'
-      },
-      {
-        title: 'Implementation',
-        bulletPoints: [
-          'Next steps',
-          'Timeline overview',
-          'Key milestones',
-          'Resources needed'
-        ],
-        imageSearchKeyword: 'roadmap'
-      },
-      {
-        title: 'Results',
-        bulletPoints: [
-          'Measurable outcomes',
-          'Success indicators',
-          'Expected timeline',
-          'Future opportunities'
-        ],
-        imageSearchKeyword: 'successful project'
-      },
-      {
-        title: 'Conclusion',
-        bulletPoints: [
-          'Summary of the presentation',
-          'Final thoughts',
-          'Call to action',
-          'Next steps for the audience'
-        ],
-        imageSearchKeyword: 'conclusion slide'
-      }
-    ]
-  };
-};
+const renderCoverSlide = (slideObj, slideData, imageData) => {
+  slideObj.background = THEME.dark;
 
-const generateSlidesFromOpenAI = async (prompt) => {
-  if (!openai) {
-    throw new Error('OpenAI API key is not configured. Set OPENAI_API_KEY in backend/.env');
+  if (imageData) {
+    slideObj.addImage({ data: imageData, x: '50%', y: '0%', w: '50%', h: '100%' });
+  } else {
+    slideObj.addShape('rect', { x: '50%', y: '0%', w: '50%', h: '100%', fill: THEME.pink });
   }
 
-  const systemPrompt = `You are an expert presentation creator. Return only valid JSON with exactly 8 to 10 slide objects. Each slide object must have the keys: title, bulletPoints, imageSearchKeyword. Example format: [{"title":"Slide title","bulletPoints":["Point 1","Point 2"],"imageSearchKeyword":"keyword"}]`;
-  const userPrompt = `Create a professional presentation outline for the topic: ${prompt}`;
-
-  const response = await openai.chat.completions.create({
-    model: openaiModel,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    temperature: 0.6,
-    max_tokens: 1100
+  slideObj.addText(slideData.title || "Untitled Presentation", {
+    x: '5%', y: '30%', w: '40%',
+    fontSize: 44, color: THEME.white, bold: true, wrap: true, fontFace: 'Arial'
   });
 
-  const raw = response?.choices?.[0]?.message?.content;
-  const parsed = parseOpenAIResponse(raw);
-
-  if (Array.isArray(parsed)) {
-    return parsed;
-  }
-
-  if (parsed && parsed.slides && Array.isArray(parsed.slides)) {
-    return parsed.slides;
-  }
-
-  throw new Error('OpenAI response did not contain a valid slide array');
+  slideObj.addText(slideData.bodyText || "", {
+    x: '5%', y: '60%', w: '40%',
+    fontSize: 18, color: THEME.gray, wrap: true, fontFace: 'Arial'
+  });
 };
 
-const normalizeSlide = async (slide, index) => {
-  const title = cleanText(slide.title) || `Slide ${index + 1}`;
-  const bulletPoints = Array.isArray(slide.bulletPoints)
-    ? slide.bulletPoints.slice(0, 5).map((point) => cleanText(point)).filter(Boolean)
-    : [];
-  const imageSearchKeyword = cleanText(slide.imageSearchKeyword) || title;
-  const imagePath = await fetchSlideImage(imageSearchKeyword, index + 1);
+const renderMetricsSlide = (slideObj, slideData) => {
+  slideObj.background = THEME.dark;
 
-  return {
-    title,
-    bulletPoints: bulletPoints.length > 0 ? bulletPoints : ['Key point 1', 'Key point 2', 'Key point 3'],
-    imageSearchKeyword,
-    imagePath
-  };
+  slideObj.addText(slideData.title || "Key Metrics", {
+    x: '10%', y: '10%', w: '80%',
+    fontSize: 36, color: THEME.white, bold: true, align: 'center', wrap: true, fontFace: 'Arial'
+  });
+
+  const metrics = slideData.metrics || [];
+  const xCoords = ['10%', '40%', '70%'];
+
+  metrics.slice(0, 3).forEach((metric, idx) => {
+    const x = xCoords[idx];
+    slideObj.addText(metric.number || "0", {
+      x: x, y: '40%', w: '25%',
+      fontSize: 64, color: THEME.pink, bold: true, align: 'center', wrap: true, fontFace: 'Arial'
+    });
+    slideObj.addText(metric.label || "Value", {
+      x: x, y: '65%', w: '25%',
+      fontSize: 16, color: THEME.gray, wrap: true, align: 'center', valign: 'top', fontFace: 'Arial'
+    });
+  });
+};
+
+const renderSplitSlide = (slideObj, slideData, imageData) => {
+  slideObj.addShape('rect', { x: '0%', y: '0%', w: '50%', h: '100%', fill: THEME.light });
+
+  if (imageData) {
+    slideObj.addImage({ data: imageData, x: '50%', y: '0%', w: '50%', h: '100%' });
+  } else {
+    slideObj.addShape('rect', { x: '50%', y: '0%', w: '50%', h: '100%', fill: THEME.dark });
+  }
+
+  slideObj.addText(slideData.title || "Analysis", {
+    x: '5%', y: '20%', w: '40%',
+    fontSize: 32, color: THEME.dark, bold: true, wrap: true, fontFace: 'Arial'
+  });
+
+  slideObj.addText(slideData.bodyText || "", {
+    x: '5%', y: '40%', w: '40%', h: '50%',
+    fontSize: 16, color: THEME.dark, wrap: true, valign: 'top', align: 'left', fontFace: 'Arial'
+  });
+};
+
+const generateSlidesWithGemini = async (prompt, research) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error("CRITICAL ENV FAILURE: API key is undefined.");
+    throw new Error("Gemini API Error: Missing GEMINI_API_KEY");
+  }
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: geminiModel,
+      systemInstruction:
+        'You are an elite VC Pitch Deck designer. Based on the Research Context, generate EXACTLY 8-10 slides. You must return a raw JSON array containing objects with this exact schema: [{ "layoutType": "cover" | "metrics" | "split", "title": "...", "bodyText": "...", "metrics": [{"number": "...", "label": "..."}], "imageKeyword": "..." }]'
+    });
+    const userText = `Research Context: ${research || '(none)'}\nPrompt: ${prompt}\nReturn ONLY a raw JSON array; no markdown fences.`;
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: userText }] }],
+      generationConfig: { responseMimeType: 'application/json' }
+    });
+    const response = await result.response;
+    const raw = response.text();
+    const slides = parseSlidesJson(raw);
+    return slides;
+  } catch (err) {
+    const status = err?.status || err?.response?.status || err?.statusCode;
+    if (status === 401 || status === 429) {
+      console.error('[ai] gemini_error_status:', status, err?.message);
+      throw new Error('Gemini API Error: Check your API key and quota');
+    }
+    console.error('[ai] gemini_request_error:', err?.message || err);
+    const msg = typeof err?.message === 'string' ? err.message : 'Unknown error';
+    throw new Error('Gemini API Error: ' + msg);
+  }
 };
 
 const generatePresentationContent = async (prompt) => {
-  if (!prompt || !prompt.trim()) {
-    throw new Error('Prompt is required');
-  }
+  if (!prompt || !prompt.trim()) throw new Error('A prompt is required for generation.');
 
-  try {
-    const slides = await generateSlidesFromOpenAI(prompt);
-    if (!Array.isArray(slides) || slides.length < 8 || slides.length > 10) {
-      throw new Error('OpenAI returned invalid slide count');
-    }
+  const research = await fetchResearch(prompt);
 
-    const normalizedSlides = await Promise.all(slides.map(normalizeSlide));
-    return {
-      title: `Presentation: ${cleanText(prompt)}`,
-      slides: normalizedSlides
-    };
-  } catch (error) {
-    console.error('AI generation failed, using fallback content:', error.message || error);
-    return generateFallbackContent(prompt);
-  }
+  const slidesData = await generateSlidesWithGemini(prompt, research);
+
+  const enrichedSlides = await Promise.all(
+    slidesData.map(async (slide) => {
+      let imageData = null;
+      try {
+        imageData = await fetchSlideImage(slide.imageKeyword);
+      } catch (e) {
+        console.error('[service] image_enrichment_error:', e.message);
+        imageData = null;
+      }
+      return { ...slide, imageData };
+    })
+  );
+
+  return { title: prompt, slides: enrichedSlides };
 };
 
-const createPowerPoint = async (content, filename) => {
+const createPowerPoint = async (content, fullPath) => {
   const pres = new PptxGenJS();
+  pres.layout = 'LAYOUT_16x9';
 
-  console.log('Creating PowerPoint for:', { title: content.title, slideCount: content.slides.length });
-  
-  // Validate slide content types
-  content.slides.forEach((slide, i) => {
-    if (typeof slide.title !== 'string') console.warn(`Slide ${i} title not string:`, typeof slide.title);
-    if (Array.isArray(slide.bulletPoints)) {
-      slide.bulletPoints.forEach((point, j) => {
-        if (typeof point !== 'string') console.warn(`Slide ${i} point ${j} not string:`, typeof point);
-      });
+  if (!content || !Array.isArray(content.slides)) {
+    throw new Error('Presentation content must contain a valid slides array.');
+  }
+
+  content.slides.forEach((slide) => {
+    const slideObj = pres.addSlide();
+    switch (slide.layoutType) {
+      case 'cover':
+        renderCoverSlide(slideObj, slide, slide.imageData);
+        break;
+      case 'metrics':
+        renderMetricsSlide(slideObj, slide);
+        break;
+      case 'split':
+        renderSplitSlide(slideObj, slide, slide.imageData);
+        break;
+      default:
+        renderSplitSlide(slideObj, slide, slide.imageData);
+        break;
     }
   });
 
-  const titleSlide = pres.addSlide();
-  titleSlide.background = '#111827';
-  titleSlide.addText(content.title || 'AI Generated Presentation', {
-    x: 0.5,
-    y: 1.5,
-    w: 9,
-    h: 1.5,
-    fontSize: 44,
-    bold: true,
-    color: '#ffffff',
-    align: 'center',
-    fontFace: 'Arial'
-  });
-  titleSlide.addText('Created from your prompt', {
-    x: 0.5,
-    y: 3.2,
-    w: 9,
-    h: 0.7,
-    fontSize: 22,
-    color: '#ec4899',
-    align: 'center',
-    fontFace: 'Arial'
-  });
+  await pres.writeFile({ fileName: fullPath });
+  return fullPath;
+};
 
-  content.slides.forEach((slide, index) => {
-    try {
-      console.log(`Processing slide ${index + 1}:`, { title: slide.title, bulletPoints: slide.bulletPoints?.length, imagePath: slide.imagePath });
-      
-      const slideObj = pres.addSlide();
-      slideObj.background = '#f8fafc';
-
-      slideObj.addShape(pres.ShapeType.rect, {
-        x: 0,
-        y: 0,
-        w: '100%',
-        h: 0.65,
-        fill: '#4f46e5'
-      });
-
-      slideObj.addText(slide.title || `Slide ${index + 1}`, {
-        x: 0.5,
-        y: 0.1,
-        w: 9,
-        h: 0.6,
-        fontSize: 30,
-        bold: true,
-        color: '#ffffff',
-        fontFace: 'Arial'
-      });
-
-      const hasImage = Boolean(slide.imagePath);
-      if (hasImage) {
-        try {
-          slideObj.addImage({
-            path: slide.imagePath,
-            x: 5.0,
-            y: 1.0,
-            w: 4.0,
-            h: 3.0
-          });
-        } catch (imageError) {
-          console.error(`Unable to add image to slide ${index + 1}:`, imageError.message || imageError);
-        }
-      }
-
-      const bodyWidth = hasImage ? 4.5 : 9.0;
-      slideObj.addText(slide.bulletPoints.map((item) => `• ${item}`).join('\n'), {
-        x: 0.5,
-        y: 1.1,
-        w: bodyWidth,
-        h: 4.8,
-        fontSize: 18,
-        color: '#111827',
-        fontFace: 'Arial'
-      });
-
-      slideObj.addShape(pres.ShapeType.rect, {
-        x: 0,
-        y: 6.8,
-        w: '100%',
-        h: 0.1,
-        fill: '#ec4899'
-      });
-
-      slideObj.addText(`Slide ${index + 1}`, {
-        x: 9.2,
-        y: 6.85,
-        w: 0.6,
-        h: 0.3,
-        fontSize: 12,
-        color: '#4f46e5',
-        align: 'right',
-        fontFace: 'Arial'
-      });
-    } catch (slideError) {
-      console.error(`Error processing slide ${index + 1}:`, slideError.message);
-      throw slideError;
-    }
-  });
-
-  await pres.writeFile({ fileName: filename });
-  return filename;
+const generateFallbackContent = () => {
+  throw new Error('Fallback disabled');
 };
 
 module.exports = {

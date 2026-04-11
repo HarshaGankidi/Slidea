@@ -6,7 +6,7 @@
 backend/node_modules/
 frontend/node_modules/
 
-# Local env files
+# Local env files — never commit API keys or secrets
 .env
 backend/.env
 frontend/.env

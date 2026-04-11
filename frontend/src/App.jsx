@@ -17,52 +17,59 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+    <div className="min-h-screen bg-slate-50 flex flex-col">
       <Header />
       
       {/* Navigation Tabs */}
-      <div className="bg-white shadow-md sticky top-0 z-50">
+      <div className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50 border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-center space-x-8">
+          <div className="flex justify-center space-x-4 sm:space-x-12">
             <button
               onClick={() => setActiveTab('generator')}
-              className={`py-4 px-6 font-semibold transition-all border-b-4 ${
+              className={`py-5 px-4 sm:px-8 font-black uppercase tracking-widest text-sm transition-all border-b-4 ${
                 activeTab === 'generator'
                   ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
+                  : 'border-transparent text-gray-400 hover:text-gray-900'
               }`}
             >
-              🚀 Create Presentation
+              🚀 Generator
             </button>
             <button
               onClick={() => setActiveTab('history')}
-              className={`py-4 px-6 font-semibold transition-all border-b-4 ${
+              className={`py-5 px-4 sm:px-8 font-black uppercase tracking-widest text-sm transition-all border-b-4 ${
                 activeTab === 'history'
                   ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
+                  : 'border-transparent text-gray-400 hover:text-gray-900'
               }`}
             >
-              📚 My Presentations
+              📚 Library
             </button>
           </div>
         </div>
       </div>
 
-      {/* Content */}
-      <main>
-        {activeTab === 'generator' && (
-          <PresentationGenerator onPresentationGenerated={handlePresentationGenerated} />
-        )}
-        {activeTab === 'history' && <History />}
+      {/* Content Area */}
+      <main className="flex-grow">
+        <div className="animate-in fade-in duration-700">
+          {activeTab === 'generator' && (
+            <PresentationGenerator onPresentationGenerated={handlePresentationGenerated} />
+          )}
+          {activeTab === 'history' && <History />}
+        </div>
       </main>
 
       {/* Footer */}
-      <footer className="bg-gradient-to-r from-indigo-900 to-pink-900 text-white py-8 mt-16">
+      <footer className="bg-slate-900 text-white py-12 mt-24">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-gray-300">© 2024 Slidea - AI Presentation Generator</p>
-          <p className="text-gray-400 text-sm mt-2">
-            Create beautiful presentations with the power of AI
+          <div className="flex justify-center items-center space-x-2 mb-4">
+            <span className="text-2xl font-black bg-clip-text bg-gradient-to-r from-indigo-400 to-pink-400 text-transparent">Slidea</span>
+          </div>
+          <p className="text-gray-400 max-w-md mx-auto leading-relaxed">
+            The world's most advanced AI presentation generator. Researching, designing, and delivering your vision in seconds.
           </p>
+          <div className="mt-8 pt-8 border-t border-slate-800 text-gray-500 text-sm">
+            © 2024 Slidea AI. All rights reserved.
+          </div>
         </div>
       </footer>
     </div>
