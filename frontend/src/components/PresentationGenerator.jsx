@@ -1,97 +1,227 @@
-import React, { useCallback, useRef, useState } from 'react';
-import { exportPresentationBlob, streamGeneratePresentation } from '../services/api';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { exportPresentationBlob, getPresentationJobStatus, startPresentationJob } from '../services/api';
+
+const JOB_POLL_MS = 2000;
 
 const stripImageData = (slides) => (slides || []).map(({ imageData, ...rest }) => rest);
 
-const previewImageSrc = (imageData) => {
-  if (typeof imageData !== 'string' || !imageData) return null;
-  if (imageData.startsWith('data:')) return imageData;
-  if (imageData.startsWith('http://') || imageData.startsWith('https://')) return imageData;
-  return `data:image/jpeg;base64,${imageData}`;
-};
-
-const SlidePreviewCard = ({ slide, index, accent }) => {
-  const layout = slide.layoutType || 'classic_rich';
-  const imgSrc = previewImageSrc(slide.imageData);
-  const isMasterclass = layout === 'classic_rich' || layout === 'split_rich';
-  const takeaways = Array.isArray(slide.keyTakeaways) ? slide.keyTakeaways.filter(Boolean).slice(0, 5) : [];
+/** Bulletproof slide hero image: primary URL with instant Picsum fallback on error (CORS/malformed URL). */
+const SlidePreviewImage = ({ slide, index }) => {
+  const primary =
+    (typeof slide.imageData === 'string' && slide.imageData.trim()) ||
+    `https://picsum.photos/seed/${index}/800/450`;
+  const fallback = `https://picsum.photos/seed/${(slide.title || `slide${index}`).replace(/\s+/g, '')}/800/450`;
 
   return (
-    <div className="rounded-2xl overflow-hidden flex flex-col bg-white shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/80 hover:ring-slate-300 hover:shadow-xl transition-all duration-300">
+    <img
+      src={primary}
+      alt="Slide Preview"
+      className="absolute inset-0 h-full w-full object-cover"
+      referrerPolicy="no-referrer"
+      onError={(e) => {
+        const el = e.currentTarget;
+        el.onerror = null;
+        el.src = fallback;
+      }}
+    />
+  );
+};
+
+const CHART_HUES = [265, 200, 45, 330, 160, 25, 310, 190];
+
+const SlideMiniChart = ({ layout, chartData, accent }) => {
+  const labels = Array.isArray(chartData?.labels) ? chartData.labels : [];
+  const values = Array.isArray(chartData?.values) ? chartData.values.map((v) => Number(v) || 0) : [];
+  if (!labels.length || !values.length) return null;
+  const n = Math.min(labels.length, values.length, 8);
+  const L = labels.slice(0, n);
+  const V = values.slice(0, n);
+  const max = Math.max(...V, 1);
+
+  if (layout === 'chart_pie') {
+    const total = V.reduce((a, b) => a + b, 0) || 1;
+    let acc = 0;
+    const stops = V.map((v, i) => {
+      const pct = (v / total) * 100;
+      const start = acc;
+      acc += pct;
+      const hue = CHART_HUES[i % CHART_HUES.length];
+      return `hsl(${hue} 72% 52%) ${start}% ${acc}%`;
+    }).join(', ');
+    return (
       <div
-        className="h-1 w-full shrink-0"
-        style={{ background: `linear-gradient(90deg, ${accent || '#6366f1'}, #0f172a)` }}
+        className="mx-auto mt-2 h-20 w-20 shrink-0 rounded-full border border-white/25 shadow-inner ring-2 ring-white/10"
+        style={{ background: `conic-gradient(${stops})` }}
+        title={chartData?.chartTitle || 'Distribution'}
       />
-      <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-slate-950 to-slate-900 text-white">
-        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-500">Slide {index + 1}</span>
-        <span
-          className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-md bg-white/10 text-white border border-white/10"
-          style={{ color: accent || '#a5b4fc' }}
-        >
-          {layout}
-        </span>
-      </div>
+    );
+  }
 
-      {imgSrc ? (
-        <div className="px-5 pt-3">
-          <div className="relative w-full h-48 rounded-md overflow-hidden mb-4">
-            <img src={imgSrc} alt="slide preview" className="w-full h-full object-cover" />
-            <div
-              className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px] border border-white/10 pointer-events-none"
-              aria-hidden
-            />
-          </div>
+  return (
+    <div className="mt-2 flex h-14 items-end justify-center gap-1.5 px-1">
+      {V.map((v, i) => (
+        <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-0.5">
+          <div
+            className="w-full max-w-[12px] rounded-t-sm opacity-95 shadow-sm"
+            style={{
+              height: `${Math.max(6, Math.round((v / max) * 52))}px`,
+              backgroundColor: accent || '#818cf8',
+              filter: `hue-rotate(${i * 28}deg)`
+            }}
+          />
+          <span className="max-w-full truncate text-[6px] font-mono uppercase tracking-wider text-slate-400">
+            {String(L[i]).slice(0, 3)}
+          </span>
         </div>
-      ) : null}
+      ))}
+    </div>
+  );
+};
 
-      <div className={`p-5 flex flex-col gap-3 flex-1 ${imgSrc ? 'pt-0' : ''}`}>
-        <h3 className="text-lg font-black text-slate-900 leading-tight tracking-tight">{slide.title || 'Untitled'}</h3>
+const SlidePreviewCard = ({ slide, index, accent, primaryText }) => {
+  const layout = slide.layoutType || 'classic_rich';
+  const isChart = layout === 'chart_pie' || layout === 'chart_bar';
+  const isMasterclass = layout === 'classic_rich' || layout === 'split_rich' || isChart;
+  const takeaways = Array.isArray(slide.keyTakeaways) ? slide.keyTakeaways.filter(Boolean).slice(0, 5) : [];
+  const titleColor = primaryText || '#f8fafc';
+  const fallbackBg = `linear-gradient(135deg, ${accent || '#4f46e5'}33 0%, #0f172a 50%, #020617 100%)`;
 
-        {isMasterclass ? (
-          <>
+  return (
+    <div className="group rounded-2xl p-[1px] shadow-xl shadow-indigo-950/20 ring-1 ring-white/10 transition-all duration-500 hover:shadow-[0_0_32px_rgba(99,102,241,0.25)] hover:ring-indigo-400/30">
+      <div className="overflow-hidden rounded-2xl bg-slate-950">
+        <div className="flex items-center justify-between border-b border-white/10 bg-black/40 px-3 py-2 backdrop-blur-md">
+          <span className="text-[10px] font-mono uppercase tracking-[0.25em] text-slate-500">Slide {index + 1}</span>
+          <span
+            className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-white"
+            style={{ color: accent || '#a5b4fc' }}
+          >
+            {layout}
+          </span>
+        </div>
+
+        <div className="relative aspect-video w-full overflow-hidden">
+          <div className="absolute inset-0" style={{ background: fallbackBg }} aria-hidden />
+          <SlidePreviewImage slide={slide} index={index} />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/75 to-slate-950/35" />
+          <div className="absolute inset-0 border border-white/5 bg-white/5 backdrop-blur-[3px]" />
+
+          <div className="relative flex h-full flex-col p-4 sm:p-5">
+            <h3
+              className="text-sm font-black leading-tight tracking-wide drop-shadow sm:text-base"
+              style={{ color: titleColor }}
+            >
+              {slide.title || 'Untitled'}
+            </h3>
             {slide.subtitle ? (
-              <p className="text-sm font-bold" style={{ color: accent || '#4f46e5' }}>
+              <p
+                className="mt-1 text-[11px] font-bold tracking-wide text-white/90 sm:text-xs"
+                style={{ color: accent || '#c4b5fd' }}
+              >
                 {slide.subtitle}
               </p>
             ) : null}
-            {slide.detailedParagraph ? (
-              <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">{slide.detailedParagraph}</p>
-            ) : null}
-            {takeaways.length > 0 ? (
-              <ul className="list-disc list-inside text-sm text-slate-700 space-y-1 font-medium">
-                {takeaways.map((t, i) => (
-                  <li key={i}>{t}</li>
-                ))}
-              </ul>
-            ) : null}
-            {slide.speakerNotes ? (
-              <div className="mt-1 rounded-xl bg-amber-50/90 border border-amber-100 px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-amber-800 mb-1">Speaker notes</p>
-                <p className="text-xs text-amber-950/90 leading-snug">{slide.speakerNotes}</p>
+
+            {isChart ? (
+              <div className="mt-3 grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
+                <div className="min-h-0 overflow-hidden rounded-lg border border-white/10 bg-black/25 p-2 backdrop-blur-sm">
+                  {slide.detailedParagraph ? (
+                    <p className="text-[10px] leading-relaxed tracking-wide text-slate-200/95 sm:text-[11px]">
+                      {slide.detailedParagraph}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex min-h-[5rem] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-2 backdrop-blur-sm">
+                  {slide.chartData ? (
+                    <SlideMiniChart layout={layout} chartData={slide.chartData} accent={accent} />
+                  ) : (
+                    <p className="text-[10px] tracking-wide text-slate-500">Chart data</p>
+                  )}
+                  {slide.chartData?.chartTitle ? (
+                    <p className="mt-1 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-400">
+                      {slide.chartData.chartTitle}
+                    </p>
+                  ) : null}
+                </div>
               </div>
             ) : null}
-          </>
-        ) : (
-          <>
-            {slide.bodyText ? (
-              <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">{slide.bodyText}</p>
-            ) : null}
-          </>
-        )}
 
-        {!imgSrc && (
-          <div className="mt-auto pt-3 border-t border-slate-100">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Background</p>
-            <div className="h-28 rounded-xl bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 border border-dashed border-slate-200 flex flex-col items-center justify-center px-3">
-              <p className="text-xs font-semibold text-slate-500">No 16:9 background yet</p>
-              {(slide.bgKeyword || slide.imageKeyword) ? (
-                <p className="text-[10px] text-slate-400 mt-1 font-mono truncate max-w-full">
-                  {slide.bgKeyword || slide.imageKeyword}
-                </p>
-              ) : null}
-            </div>
+            {isMasterclass && !isChart ? (
+              <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
+                {slide.detailedParagraph ? (
+                  <p className="text-[10px] leading-relaxed tracking-wide text-slate-200/95 sm:text-[11px]">
+                    {slide.detailedParagraph}
+                  </p>
+                ) : null}
+                {takeaways.length > 0 ? (
+                  <ul className="space-y-1 text-[10px] font-medium tracking-wide text-slate-300/95 sm:text-[11px]">
+                    {takeaways.map((t, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="text-indigo-400">▸</span>
+                        <span>{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isMasterclass && slide.bodyText ? (
+              <p className="mt-2 text-[10px] tracking-wide text-slate-300">{slide.bodyText}</p>
+            ) : null}
+
+            {slide.speakerNotes ? (
+              <div className="mt-auto border-t border-amber-500/20 pt-2">
+                <p className="text-[8px] font-bold uppercase tracking-widest text-amber-200/80">Notes</p>
+                <p className="line-clamp-2 text-[9px] leading-snug tracking-wide text-amber-100/90">{slide.speakerNotes}</p>
+              </div>
+            ) : null}
           </div>
-        )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const JobStatusTerminal = ({ loading, statusLines }) => {
+  if (!loading && statusLines.length === 0) return null;
+  return (
+    <div className="rounded-2xl border border-white/20 bg-white/10 p-1 shadow-[0_0_24px_rgba(99,102,241,0.35)] backdrop-blur-md">
+      <div className="overflow-hidden rounded-xl border border-white/10 bg-[#070b14]/90">
+        <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-4 py-2.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.7)]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]" />
+          <span className="ml-2 bg-gradient-to-r from-cyan-400 to-indigo-400 bg-clip-text text-[10px] font-mono font-bold uppercase tracking-[0.35em] text-transparent">
+            Slidea · neural build
+          </span>
+        </div>
+        {loading ? (
+          <div className="px-4 pt-3">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5 ring-1 ring-indigo-500/20">
+              <div className="h-full w-full animate-pulse bg-gradient-to-r from-indigo-600/40 via-fuchsia-500/60 to-cyan-500/40" />
+            </div>
+            <p className="mt-1.5 text-[9px] font-mono uppercase tracking-widest text-indigo-300/70">Processing pipeline</p>
+          </div>
+        ) : null}
+        <div className="max-h-52 min-h-[100px] overflow-y-auto p-4 font-mono text-left text-sm">
+          {statusLines.length === 0 && loading && (
+            <p className="text-slate-500">
+              <span className="text-cyan-400">➜</span> Handshake complete — polling job…
+            </p>
+          )}
+          {statusLines.map((row, i) => {
+            const isLatest = i === statusLines.length - 1;
+            return (
+              <p
+                key={row.t + row.line}
+                className={`mb-2 leading-relaxed text-slate-200 ${loading && isLatest ? 'animate-pulse' : ''}`}
+              >
+                <span className="select-none text-fuchsia-400">❯</span>{' '}
+                <span className="text-emerald-300/95">{row.line}</span>
+              </p>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -109,6 +239,17 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   const [previewData, setPreviewData] = useState(null);
   const [refineText, setRefineText] = useState('');
   const fileInputRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const lastPolledStatusRef = useRef('');
+
+  const clearPollInterval = useCallback(() => {
+    if (pollIntervalRef.current != null) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearPollInterval(), [clearPollInterval]);
 
   const appendStatus = useCallback((line) => {
     setStatusLines((prev) => [...prev, { t: Date.now(), line }]);
@@ -139,43 +280,86 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     e.stopPropagation();
   }, []);
 
-  const runStreamGenerate = async ({ streamPrompt, streamTitle, streamPdf, clearPdfAfter, clearPromptTitleOnSuccess }) => {
+  const runJobGenerate = async ({
+    streamPrompt,
+    streamTitle,
+    streamPdf,
+    clearPdfAfter,
+    clearPromptTitleOnSuccess
+  }) => {
     setError('');
     setSuccess('');
     setStatusLines([]);
     setLoading(true);
+    clearPollInterval();
+    lastPolledStatusRef.current = '';
+
+    let terminal = false;
 
     try {
-      let completed = false;
-
-      await streamGeneratePresentation({
+      const { jobId } = await startPresentationJob({
         prompt: streamPrompt,
         title: streamTitle,
-        pdfFile: streamPdf,
-        onEvent: (payload) => {
-          if (payload.type === 'status' && payload.message) {
-            appendStatus(payload.message);
-          }
-          if (payload.type === 'complete' && payload.success && payload.data) {
-            completed = true;
-            setPreviewData(payload.data);
-            setSuccess('Deck ready — review below, then export to PowerPoint.');
-            if (clearPdfAfter) setPdfFile(null);
-            if (clearPromptTitleOnSuccess) {
-              setPrompt('');
-              setTitle('');
-            }
-          }
-        }
+        pdfFile: streamPdf
       });
 
-      if (!completed) {
-        setError('Generation finished without a result. Please try again.');
+      const pollOnce = async () => {
+        let state;
+        try {
+          state = await getPresentationJobStatus(jobId);
+        } catch (e) {
+          terminal = true;
+          clearPollInterval();
+          setLoading(false);
+          setError(typeof e?.message === 'string' ? e.message : 'Status check failed');
+          return;
+        }
+
+        if (state.status && state.status !== lastPolledStatusRef.current) {
+          lastPolledStatusRef.current = state.status;
+          appendStatus(state.status);
+        }
+
+        if (state.error) {
+          terminal = true;
+          clearPollInterval();
+          setLoading(false);
+          setError(state.error);
+          return;
+        }
+
+        if (state.isComplete && state.data) {
+          terminal = true;
+          clearPollInterval();
+          setLoading(false);
+          setPreviewData(state.data);
+          setSuccess('Deck ready — review below, then export to PowerPoint.');
+          if (clearPdfAfter) setPdfFile(null);
+          if (clearPromptTitleOnSuccess) {
+            setPrompt('');
+            setTitle('');
+          }
+          return;
+        }
+
+        if (state.isComplete) {
+          terminal = true;
+          clearPollInterval();
+          setLoading(false);
+          setError('Generation finished without a result. Please try again.');
+        }
+      };
+
+      await pollOnce();
+      if (!terminal) {
+        pollIntervalRef.current = setInterval(pollOnce, JOB_POLL_MS);
       }
     } catch (err) {
-      const msg = typeof err?.message === 'string' ? err.message : 'An error occurred while generating the presentation';
+      terminal = true;
+      clearPollInterval();
+      const msg =
+        typeof err?.message === 'string' ? err.message : 'An error occurred while generating the presentation';
       setError(msg);
-    } finally {
       setLoading(false);
     }
   };
@@ -186,7 +370,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
       setError('Please enter a presentation topic or description');
       return;
     }
-    await runStreamGenerate({
+    await runJobGenerate({
       streamPrompt: prompt.trim(),
       streamTitle: title.trim() || 'Untitled Presentation',
       streamPdf: pdfFile,
@@ -207,10 +391,10 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     }
 
     const slidesLite = stripImageData(previewData.slides);
-    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nCurrent slide deck (each slide: layoutType classic_rich or split_rich; title, subtitle, detailedParagraph, keyTakeaways[3], speakerNotes, bgKeyword). Keep that shape; revise content to satisfy the refinement:\n${JSON.stringify(slidesLite)}`;
+    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nReturn JSON with "theme" (name, bgColor, primaryText, accentColor, fontFace hex 6-digit without # where colors) and "slides" array. Current slides only (revise to satisfy refinement):\n${JSON.stringify(slidesLite)}`;
 
     setRefineText('');
-    await runStreamGenerate({
+    await runJobGenerate({
       streamPrompt,
       streamTitle: previewData.title || 'Untitled Presentation',
       streamPdf: null,
@@ -255,6 +439,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   };
 
   const clearPreview = () => {
+    clearPollInterval();
     setPreviewData(null);
     setSuccess('');
     setError('');
@@ -265,19 +450,29 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   const accent = previewData?.theme?.accent || '#6366f1';
 
   return (
-    <div className="bg-slate-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className={previewData ? 'max-w-6xl mx-auto' : 'max-w-4xl mx-auto'}>
-        <div className="text-center mb-12">
-          <h2 className="text-4xl sm:text-5xl font-extrabold text-gray-900 mb-6 leading-tight">
-            Create Presentations <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-pink-600">Instantly</span>
+    <div className="relative min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 py-12 px-4 sm:px-6 lg:px-8">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-40"
+        style={{
+          backgroundImage:
+            'radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.35), transparent), radial-gradient(ellipse 60% 40% at 100% 50%, rgba(236,72,153,0.12), transparent)'
+        }}
+      />
+      <div className={`relative z-10 mx-auto ${previewData ? 'max-w-6xl' : 'max-w-4xl'}`}>
+        <div className="mb-12 text-center">
+          <h2 className="mb-4 text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl">
+            Create presentations{' '}
+            <span className="bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-400 bg-clip-text text-transparent">
+              at studio scale
+            </span>
           </h2>
-          <p className="text-lg sm:text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            Generate with live status, preview every slide here, refine with natural language, then export a polished .pptx.
+          <p className="mx-auto max-w-2xl text-lg leading-relaxed text-slate-400 sm:text-xl">
+            Job-based generation, live status, slide-accurate preview with charts — then export a polished .pptx.
           </p>
         </div>
 
         {!previewData && (
-          <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden mb-12">
+          <div className="mb-12 overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl shadow-indigo-950/50 backdrop-blur-xl">
             <div className="p-8 sm:p-10">
               <form onSubmit={handleSubmit} className="space-y-8">
                 <div>
@@ -372,35 +567,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                   </div>
                 </div>
 
-                {(loading || statusLines.length > 0) && (
-                  <div className="rounded-2xl overflow-hidden border border-gray-800 bg-[#0d1117] shadow-inner">
-                    <div className="flex items-center gap-2 px-4 py-2 bg-[#161b22] border-b border-gray-800">
-                      <span className="h-3 w-3 rounded-full bg-red-500/90" />
-                      <span className="h-3 w-3 rounded-full bg-amber-400/90" />
-                      <span className="h-3 w-3 rounded-full bg-emerald-500/90" />
-                      <span className="ml-2 text-[11px] font-mono text-gray-500 uppercase tracking-widest">slidea — live build</span>
-                    </div>
-                    <div className="p-4 font-mono text-sm min-h-[120px] max-h-56 overflow-y-auto text-left">
-                      {statusLines.length === 0 && loading && (
-                        <p className="text-gray-500">
-                          <span className="text-emerald-400">➜</span> Connecting…
-                        </p>
-                      )}
-                      {statusLines.map((row) => (
-                        <p key={row.t + row.line} className="text-gray-200 mb-1.5 leading-relaxed">
-                          <span className="text-cyan-400 select-none">❯</span>{' '}
-                          <span className="text-emerald-300/95">{row.line}</span>
-                        </p>
-                      ))}
-                      {loading && (
-                        <p className="text-gray-500 mt-2">
-                          <span className="inline-block w-2 h-4 bg-emerald-400/90 animate-pulse align-middle mr-1" />
-                          working…
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
+                <JobStatusTerminal loading={loading} statusLines={statusLines} />
 
                 {error && (
                   <div className="p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg text-red-800 font-medium flex items-center">
@@ -438,56 +605,55 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
         )}
 
         {previewData && (
-          <div className="space-y-8 mb-12">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="mb-12 space-y-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h3 className="text-2xl font-black text-gray-900">Preview deck</h3>
-                <p className="text-gray-500 font-medium mt-1">
-                  Theme: <span style={{ color: accent }}>{previewData.themeName || 'Custom'}</span>
+                <h3 className="text-2xl font-black tracking-tight text-white">Deck preview</h3>
+                <p className="mt-1 font-medium text-slate-400">
+                  Theme{' '}
+                  <span className="tracking-wide" style={{ color: accent }}>
+                    {previewData.themeName || 'Custom'}
+                  </span>
                   {previewData.title ? ` · ${previewData.title}` : ''}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={clearPreview}
-                className="self-start px-5 py-2.5 rounded-xl border-2 border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition-colors"
+                className="self-start rounded-xl border border-white/20 bg-white/5 px-5 py-2.5 font-bold text-white backdrop-blur-sm transition-colors hover:bg-white/10"
               >
                 ← New deck
               </button>
             </div>
 
-            {(loading || statusLines.length > 0) && (
-              <div className="rounded-2xl overflow-hidden border border-gray-800 bg-[#0d1117] shadow-inner">
-                <div className="flex items-center gap-2 px-4 py-2 bg-[#161b22] border-b border-gray-800">
-                  <span className="ml-2 text-[11px] font-mono text-gray-500 uppercase tracking-widest">slidea — live build</span>
-                </div>
-                <div className="p-4 font-mono text-sm max-h-40 overflow-y-auto text-left">
-                  {statusLines.map((row) => (
-                    <p key={row.t + row.line} className="text-gray-200 mb-1">
-                      <span className="text-cyan-400">❯</span> <span className="text-emerald-300/95">{row.line}</span>
-                    </p>
-                  ))}
-                  {loading && <p className="text-gray-500 text-xs mt-1 animate-pulse">working…</p>}
-                </div>
-              </div>
-            )}
+            <JobStatusTerminal loading={loading} statusLines={statusLines} />
 
-            <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="max-h-[72vh] space-y-6 overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 {previewData.slides.map((slide, idx) => (
-                  <SlidePreviewCard key={idx} slide={slide} index={idx} accent={accent} />
+                  <SlidePreviewCard
+                    key={idx}
+                    slide={slide}
+                    index={idx}
+                    accent={accent}
+                    primaryText={previewData.theme?.primaryText}
+                  />
                 ))}
               </div>
             </div>
 
             {error && (
-              <div className="p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg text-red-800 font-medium">{error}</div>
+              <div className="rounded-xl border border-red-500/40 bg-red-950/50 p-4 font-medium text-red-200 backdrop-blur-sm">
+                {error}
+              </div>
             )}
             {success && !error && (
-              <div className="p-4 bg-green-50 border-l-4 border-green-500 rounded-r-lg text-green-800 font-medium">{success}</div>
+              <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/40 p-4 font-medium text-emerald-200 backdrop-blur-sm">
+                {success}
+              </div>
             )}
 
-            <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-end bg-white rounded-3xl border border-gray-200 shadow-lg p-6 sm:p-8">
+            <div className="flex flex-col items-stretch gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur-md sm:p-8 lg:flex-row lg:items-end">
               <button
                 type="button"
                 disabled={exportLoading || loading}
@@ -502,7 +668,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                   value={refineText}
                   onChange={(e) => setRefineText(e.target.value)}
                   placeholder="Want changes? Type them here…"
-                  className="flex-1 px-4 py-4 rounded-2xl border-2 border-gray-200 focus:border-indigo-500 focus:outline-none text-gray-900 font-medium"
+                  className="flex-1 rounded-2xl border border-white/15 bg-slate-950/70 px-4 py-4 font-medium text-white placeholder:text-slate-500 focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                   disabled={loading}
                 />
                 <button
@@ -519,31 +685,31 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
         )}
 
         {!previewData && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
             {[
               {
                 icon: '👁️',
                 title: 'Preview first',
-                desc: 'Review every slide and image before anything hits your disk as a .pptx.'
+                desc: '16:9 slide frames, charts, and glass layouts before export.'
               },
               {
                 icon: '✏️',
                 title: 'Refine with AI',
-                desc: 'Iterate with natural language; we resend context so Gemini reshapes the deck.'
+                desc: 'Natural-language passes; schema-safe slides including chart data.'
               },
               {
                 icon: '📥',
                 title: 'Export on demand',
-                desc: 'One click builds the PowerPoint from your preview JSON — theme and layouts preserved.'
+                desc: 'Native PPTX with pptxgenjs charts, auto-fit text, and your theme.'
               }
             ].map((feature, idx) => (
               <div
                 key={idx}
-                className="bg-white p-8 rounded-3xl shadow-lg border border-gray-50 hover:border-indigo-100 transition-all text-center group"
+                className="group rounded-3xl border border-white/10 bg-white/5 p-8 text-center shadow-lg backdrop-blur-md transition-all hover:border-indigo-500/30 hover:shadow-indigo-500/10"
               >
-                <div className="text-5xl mb-4 group-hover:scale-110 transition-transform">{feature.icon}</div>
-                <h3 className="text-xl font-black text-gray-900 mb-3 uppercase tracking-tight">{feature.title}</h3>
-                <p className="text-gray-500 leading-relaxed font-medium">{feature.desc}</p>
+                <div className="mb-4 text-5xl transition-transform group-hover:scale-110">{feature.icon}</div>
+                <h3 className="mb-3 text-xl font-black uppercase tracking-wide text-white">{feature.title}</h3>
+                <p className="font-medium leading-relaxed text-slate-400">{feature.desc}</p>
               </div>
             ))}
           </div>

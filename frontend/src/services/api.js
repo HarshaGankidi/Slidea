@@ -11,7 +11,7 @@ const apiClient = axios.create({
 
 const presentationsBase = () => `${(apiClient.defaults.baseURL || '').replace(/\/$/, '')}/presentations`;
 
-/** POST /presentations/generate — multipart + SSE */
+/** POST /presentations/generate — multipart; returns { jobId } (202) */
 export const getGeneratePresentationUrl = () => `${presentationsBase()}/generate`;
 
 /** POST /presentations/export — JSON body, binary .pptx response */
@@ -34,10 +34,8 @@ export const exportPresentationBlob = async ({ title, slides, theme, prompt }) =
   return res.blob();
 };
 
-/**
- * Multipart generate with SSE-style events: { type: 'status'|'complete'|'error', ... }
- */
-export const streamGeneratePresentation = async ({ prompt, title, pdfFile, onEvent }) => {
+/** Start async generation; poll {@link getPresentationJobStatus} until isComplete. */
+export const startPresentationJob = async ({ prompt, title, pdfFile }) => {
   const formData = new FormData();
   formData.append('prompt', prompt);
   if (title) formData.append('title', title);
@@ -58,46 +56,27 @@ export const streamGeneratePresentation = async ({ prompt, title, pdfFile, onEve
     throw new Error(`Request failed (${res.status})`);
   }
 
-  if (!contentType.includes('text/event-stream')) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || 'Unexpected response from server');
+  const body = await res.json().catch(() => ({}));
+  if (!body.jobId) {
+    throw new Error('Server did not return a job id');
+  }
+  return body;
+};
+
+/** GET /presentations/status/:jobId */
+export const getPresentationJobStatus = async (jobId) => {
+  const res = await fetch(`${presentationsBase()}/status/${encodeURIComponent(jobId)}`);
+
+  if (res.status === 404) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.message || 'Job not found');
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let streamError = null;
-
-  const processBuffer = () => {
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() || '';
-    for (const block of parts) {
-      const line = block.trim();
-      if (!line.startsWith('data:')) continue;
-      const jsonStr = line.slice(5).trim();
-      if (!jsonStr) continue;
-      try {
-        const payload = JSON.parse(jsonStr);
-        if (payload.type === 'error') {
-          streamError = new Error(payload.message || 'Generation failed');
-        }
-        if (typeof onEvent === 'function') onEvent(payload);
-      } catch {
-        /* ignore malformed chunk */
-      }
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    processBuffer();
+  if (!res.ok) {
+    throw new Error(`Status request failed (${res.status})`);
   }
-  buffer += decoder.decode();
-  processBuffer();
 
-  if (streamError) throw streamError;
+  return res.json();
 };
 
 export const presentationAPI = {

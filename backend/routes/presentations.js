@@ -28,6 +28,8 @@ const generateUpload = (req, res, next) => {
 
 router.post('/generate', generateUpload, presentationController.generatePresentation);
 
+router.get('/status/:jobId', presentationController.getGenerationStatus);
+
 router.post('/export', presentationController.exportPresentation);
 
 router.get('/history', presentationController.getPresentationHistory);

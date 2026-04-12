@@ -18,43 +18,43 @@ if (!fs.existsSync(presentationsDir)) {
   fs.mkdirSync(presentationsDir, { recursive: true });
 }
 
-const writeSse = (res, payload) => {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-};
+/** In-memory generation jobs (short-lived; survives long AI work without holding HTTP open). */
+const jobs = {};
 
-const presentationController = {
-  generatePresentation: async (req, res) => {
-    let sseActive = false;
-    const abortController = new AbortController();
-    const onClientClose = () => {
-      abortController.abort();
+const runGenerationJob = (jobId, { prompt, titleRaw, pdfBuffer }) => {
+  const updateStatus = (msg) => {
+    if (jobs[jobId]) jobs[jobId].status = msg;
+  };
+
+  const fail = (err) => {
+    if (!jobs[jobId]) return;
+    jobs[jobId].error = err?.message || 'Internal Server Error';
+    jobs[jobId].isComplete = true;
+    if (err?.code !== 'CLIENT_ABORT') {
+      console.error('GENERATE JOB ERROR:', err);
+      console.error(err?.stack);
+    }
+  };
+
+  const succeed = (content, generatedTitle) => {
+    if (!jobs[jobId]) return;
+    jobs[jobId].data = {
+      title: generatedTitle,
+      slides: content.slides,
+      theme: content.theme,
+      themeName: content.themeName,
+      originalPrompt: content.originalPrompt || prompt
     };
+    jobs[jobId].isComplete = true;
+    jobs[jobId].status = 'Deck ready — preview on the client.';
+  };
 
+  (async () => {
     try {
-      const prompt = (req.body?.prompt || '').trim();
-      const titleRaw = (req.body?.title || '').trim();
-
-      if (!prompt) {
-        return res.status(400).json({
-          success: false,
-          message: 'Prompt is required'
-        });
-      }
-
-      sseActive = true;
-      req.on('close', onClientClose);
-
-      res.status(200);
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
-      if (typeof res.flushHeaders === 'function') res.flushHeaders();
-
       let researchFromPdf = null;
-      if (req.file?.buffer) {
-        writeSse(res, { type: 'status', message: 'Reading PDF Document...' });
-        const parser = new PDFParse({ data: req.file.buffer });
+      if (pdfBuffer && pdfBuffer.length > 0) {
+        updateStatus('Reading PDF Document...');
+        const parser = new PDFParse({ data: pdfBuffer });
         try {
           await parser.load();
           const textResult = await parser.getText();
@@ -66,76 +66,79 @@ const presentationController = {
 
       const content = await generatePresentationContent(prompt, {
         researchFromPdf,
-        signal: abortController.signal,
-        onStatus: (message) => writeSse(res, { type: 'status', message })
+        onStatus: updateStatus
       });
 
       const generatedTitle = titleRaw || content.title || 'Untitled Presentation';
+      succeed(content, generatedTitle);
+    } catch (err) {
+      fail(err);
+    }
+  })();
+};
 
-      writeSse(res, { type: 'status', message: 'Deck ready — preview on the client.' });
+const presentationController = {
+  generatePresentation: async (req, res) => {
+    try {
+      const prompt = (req.body?.prompt || '').trim();
+      const titleRaw = (req.body?.title || '').trim();
 
-      writeSse(res, {
-        type: 'complete',
-        success: true,
-        data: {
-          title: generatedTitle,
-          slides: content.slides,
-          theme: content.theme,
-          themeName: content.themeName,
-          originalPrompt: content.originalPrompt || prompt
-        }
-      });
-    } catch (error) {
-      if (error?.code !== 'CLIENT_ABORT') {
-        console.error('GENERATE ERROR:', error);
-        console.error(error?.stack);
+      if (!prompt) {
+        return res.status(400).json({
+          success: false,
+          message: 'Prompt is required'
+        });
       }
-      if (!sseActive) {
-        return res.status(500).json({
+
+      const jobId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+      jobs[jobId] = {
+        status: 'Starting generation...',
+        data: null,
+        error: null,
+        isComplete: false
+      };
+
+      const pdfBuffer = req.file?.buffer ? Buffer.from(req.file.buffer) : null;
+
+      res.status(202).json({ jobId });
+
+      runGenerationJob(jobId, { prompt, titleRaw, pdfBuffer });
+    } catch (error) {
+      console.error('GENERATE ACCEPT ERROR:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
           success: false,
           message: error.message || 'Internal Server Error'
         });
       }
-      try {
-        writeSse(res, {
-          type: 'error',
-          message:
-            error?.code === 'CLIENT_ABORT'
-              ? 'Connection closed — generation stopped.'
-              : error.message || 'Internal Server Error'
-        });
-      } catch (writeErr) {
-        console.error('SSE error write failed:', writeErr?.message);
-      }
-    } finally {
-      if (sseActive) {
-        req.removeListener('close', onClientClose);
-      }
-      if (sseActive) {
-        try {
-          if (!res.writableEnded) {
-            res.write('event: done\ndata: {}\n\n');
-          }
-        } catch (doneErr) {
-          console.error('SSE done event write failed:', doneErr?.message);
-        }
-        try {
-          if (!res.writableEnded) {
-            res.end();
-          }
-        } catch (endErr) {
-          console.error('SSE end failed:', endErr?.message);
-        }
-      }
     }
+  },
+
+  getGenerationStatus: (req, res) => {
+    const { jobId } = req.params;
+    const job = jobs[jobId];
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+    res.json({
+      status: job.status,
+      data: job.data,
+      error: job.error,
+      isComplete: job.isComplete
+    });
   },
 
   exportPresentation: async (req, res) => {
     try {
+      console.log('🚀 [EXPORT] Starting PowerPoint generation (controller)...');
       const { title, slides, theme, prompt: promptBody } = req.body || {};
       const promptForDb = typeof promptBody === 'string' ? promptBody.trim() : '';
 
       if (!Array.isArray(slides) || slides.length === 0) {
+        console.log('❌ [EXPORT] Rejected: empty or missing slides array.');
         return res.status(400).json({
           success: false,
           message: 'Request body must include a non-empty slides array'
@@ -145,19 +148,26 @@ const presentationController = {
       const displayTitle =
         typeof title === 'string' && title.trim() ? title.trim() : 'Untitled Presentation';
 
+      console.log(
+        `📥 [EXPORT] Request OK — title="${displayTitle}", slides=${slides.length}, theme=${theme ? 'yes' : 'no'}`
+      );
+
       const content = {
         title: displayTitle,
         slides,
         theme: theme && typeof theme === 'object' ? theme : undefined
       };
 
+      console.log('⏳ [EXPORT] Invoking createPowerPointBuffer (service)...');
       const buffer = await createPowerPointBuffer(content);
       const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      console.log(`📊 [EXPORT] PPTX buffer received (${nodeBuf.length} bytes).`);
 
       const presentationId = crypto.randomBytes(8).toString('hex');
       const filename = `presentation_${presentationId}.pptx`;
       const filePath = path.join(presentationsDir, filename);
 
+      console.log(`💾 [EXPORT] Persisting copy to disk: ${filename}`);
       await fs.promises.writeFile(filePath, nodeBuf);
 
       try {
@@ -172,8 +182,9 @@ const presentationController = {
           promptForDb || '(exported deck)',
           filename
         ]);
+        console.log(`✅ [EXPORT] Database row saved (id=${presentationId}).`);
       } catch (dbError) {
-        console.error('Export saved to disk but database insert failed:', dbError.message);
+        console.error('❌ [EXPORT] Saved to disk but database insert failed:', dbError.message);
       }
 
       const rawName = displayTitle;
@@ -184,9 +195,11 @@ const presentationController = {
         'application/vnd.openxmlformats-officedocument.presentationml.presentation'
       );
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`);
+      console.log(`📤 [EXPORT] Sending PPTX to client as "${safeName}.pptx"...`);
       res.send(nodeBuf);
+      console.log('✅ [EXPORT] PowerPoint successfully built and sent to client.');
     } catch (error) {
-      console.error('EXPORT ERROR:', error);
+      console.error('❌ [EXPORT] EXPORT ERROR:', error);
       console.error(error?.stack);
       if (!res.headersSent) {
         res.status(500).json({

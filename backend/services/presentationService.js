@@ -71,116 +71,79 @@ const fetchResearch = async (topic) => {
   }
 };
 
-const GEMINI_SLIDE_SCHEMA = `[
-  {
-    "layoutType": "classic_rich" | "split_rich",
-    "title": "string",
-    "subtitle": "string",
-    "detailedParagraph": "string",
-    "keyTakeaways": ["string", "string", "string"],
-    "speakerNotes": "string",
-    "bgKeyword": "string"
-  }
-]
+const GEMINI_SLIDE_SCHEMA = `{
+  "theme": {
+    "name": "string",
+    "bgColor": "RRGGBB hex without #",
+    "primaryText": "RRGGBB hex without #",
+    "accentColor": "RRGGBB hex without #",
+    "fontFace": "Helvetica Neue"
+  },
+  "slides": [
+    {
+      "layoutType": "classic_rich" | "split_rich" | "chart_pie" | "chart_bar",
+      "title": "string",
+      "subtitle": "string",
+      "detailedParagraph": "string",
+      "keyTakeaways": ["string", "string", "string"],
+      "speakerNotes": "string",
+      "bgKeyword": "string",
+      "chartData": { "chartTitle": "string", "labels": ["A", "B", "C", "D"], "values": [10, 20, 30, 40] }
+    }
+  ]
+}
 Rules:
-- Produce EXACTLY 8–10 slides. Alternate classic_rich (full glass card) and split_rich (left glass, right open background) for visual rhythm.
-- detailedParagraph: 3–4 full sentences of deep analysis or teaching — rich, precise, not shallow.
-- keyTakeaways: exactly 3 items; each a specific insight. When Research Context includes PDF or wiki text, root takeaways in that evidence.
-- speakerNotes: 2–5 sentences the presenter can read aloud; may reference the research context.
-- bgKeyword: short phrase for a cinematic 16:9 abstract corporate background (e.g. "deep blue geometry", "gold particle wave").
-- Return ONLY a raw JSON array, no markdown.`;
+- You are also the Art Director: invent a completely custom, visually stunning color palette and font pairing that perfectly matches the mood and industry of the user's prompt. Ensure high contrast (readable primaryText on glass over bgColor). theme.fontFace may be a common system font (e.g. Helvetica Neue, Georgia, Arial).
+- Produce EXACTLY between 10 and 14 slides in "slides". **Adapt layouts to the user's prompt:** financials/metrics/KPIs → heavily favor chart_pie and chart_bar; narrative/story/vision → favor classic_rich and split_rich.
+- For chart_pie or chart_bar: chartData REQUIRED (4–8 labels, matching values).
+- For classic_rich and split_rich: chartData omitted or null; keyTakeaways as before.
+- detailedParagraph, speakerNotes, bgKeyword as before.
+- Return ONLY valid JSON: one object with "theme" and "slides". No markdown.`;
 
-const parseSlidesJson = (text) => {
+const parseHex6 = (val) => {
+  const h = String(val ?? '')
+    .replace(/^#/, '')
+    .trim();
+  if (/^[0-9A-Fa-f]{6}$/.test(h)) return h.toUpperCase();
+  return null;
+};
+
+/**
+ * @returns {{ slides: object[], theme: object|null }}
+ */
+const parsePresentationJson = (text) => {
   if (!text || typeof text !== 'string') throw new Error('Empty AI response');
+  const normalize = (parsed) => {
+    if (Array.isArray(parsed)) return { slides: parsed, theme: null };
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.slides)) {
+      return { slides: parsed.slides, theme: parsed.theme || null };
+    }
+    throw new Error('Invalid shape');
+  };
   try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && Array.isArray(parsed.slides)) return parsed.slides;
+    return normalize(JSON.parse(text));
   } catch (_) {}
+  const o = text.indexOf('{');
+  const oEnd = text.lastIndexOf('}');
+  if (o !== -1 && oEnd > o) {
+    try {
+      return normalize(JSON.parse(text.slice(o, oEnd + 1)));
+    } catch (_) {}
+  }
   const s = text.indexOf('[');
   const e = text.lastIndexOf(']');
   if (s !== -1 && e !== -1 && e > s) {
     const mid = text.slice(s, e + 1);
     const arr = JSON.parse(mid);
-    if (Array.isArray(arr)) return arr;
+    if (Array.isArray(arr)) return { slides: arr, theme: null };
   }
   throw new Error('Invalid JSON format from AI');
 };
 
-const BG_W = 1280;
-const BG_H = 720;
-
-const buildPollinationsBgUrl = (bgKeyword) => {
-  const q = `${String(bgKeyword || 'abstract').trim()} classic elegant abstract deep colors corporate background`;
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(q)}?width=${BG_W}&height=${BG_H}&nologo=true&seed=${Math.random()}`;
-};
-
-const buildPicsumBgUrl = (bgKeyword) => {
-  const k = encodeURIComponent((bgKeyword || 'presentation').trim());
-  return `https://picsum.photos/seed/${k}/${BG_W}/${BG_H}`;
-};
-
-const bufferToJpegDataUrl = (buf) => {
-  if (!buf) return null;
-  const len = typeof buf.byteLength === 'number' ? buf.byteLength : buf.length;
-  if (!len) return null;
-  return 'image/jpeg;base64,' + Buffer.from(buf).toString('base64');
-};
-
-const fetchPollinationsBackground = async (bgKeyword, signal) => {
-  const url = buildPollinationsBgUrl(bgKeyword);
-  const response = await axios.get(url, {
-    responseType: 'arraybuffer',
-    timeout: 6000,
-    signal,
-    validateStatus: () => true
-  });
-  if (response.status === 429) {
-    const err = new Error('POLLINATIONS_429');
-    err.code = 'POLLINATIONS_429';
-    throw err;
-  }
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`POLLINATIONS_HTTP_${response.status}`);
-  }
-  const dataUrl = bufferToJpegDataUrl(response.data);
-  if (!dataUrl) throw new Error('POLLINATIONS_EMPTY');
-  return dataUrl;
-};
-
-const fetchPicsumBackground = async (bgKeyword, signal) => {
-  const url = buildPicsumBgUrl(bgKeyword);
-  const response = await axios.get(url, {
-    responseType: 'arraybuffer',
-    timeout: 6000,
-    signal,
-    maxRedirects: 5,
-    validateStatus: () => true,
-    headers: { 'User-Agent': 'Slidea/1.0 (+https://example.com)' }
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`PICSUM_HTTP_${response.status}`);
-  }
-  const dataUrl = bufferToJpegDataUrl(response.data);
-  if (!dataUrl) throw new Error('PICSUM_EMPTY');
-  return dataUrl;
-};
-
-const fetchSlideBackground = async (bgKeyword, signal) => {
-  if (!bgKeyword || !String(bgKeyword).trim()) return null;
-  const k = String(bgKeyword).trim();
-  try {
-    return await fetchPollinationsBackground(k, signal);
-  } catch (err) {
-    throwIfAborted(signal);
-    try {
-      return await fetchPicsumBackground(k, signal);
-    } catch (backupErr) {
-      throwIfAborted(signal);
-      console.error('Background image fallback failed:', backupErr.message);
-      return null;
-    }
-  }
+/** Direct Pollinations URL (no fetch/embed — keeps JSON small and preview valid). */
+const buildSlideBackgroundImageUrl = (bgKeyword) => {
+  const q = String(bgKeyword || 'abstract').trim() || 'abstract';
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(q)}?width=1280&height=720&nologo=true&seed=${Math.random()}`;
 };
 
 const throwIfAborted = (signal) => {
@@ -196,6 +159,80 @@ const FONT_BODY = 'Helvetica Neue';
 
 const hexNoHash = (c) => String(c || 'FFFFFF').replace(/^#/, '');
 
+/** Merge AI Art Director theme with deck fallback (invalid AI hex → fallback). */
+const mergeAiTheme = (aiTheme, fallback) => {
+  const fb = fallback || pickRandomTheme();
+  if (!aiTheme || typeof aiTheme !== 'object') {
+    return {
+      id: fb.id,
+      name: fb.name,
+      accent: fb.accent,
+      bg: fb.bg,
+      primaryText: '#F8FAFC',
+      textMuted: fb.textMuted,
+      fontFace: FONT_TITLE
+    };
+  }
+  const name = typeof aiTheme.name === 'string' && aiTheme.name.trim() ? aiTheme.name.trim() : fb.name;
+  const bgHex = parseHex6(aiTheme.bgColor) || hexNoHash(fb.bg);
+  const accentHex = parseHex6(aiTheme.accentColor) || hexNoHash(fb.accent);
+  const primaryHex = parseHex6(aiTheme.primaryText) || 'F8FAFC';
+  const fontFace =
+    typeof aiTheme.fontFace === 'string' && aiTheme.fontFace.trim()
+      ? aiTheme.fontFace.trim()
+      : FONT_TITLE;
+  return {
+    id: 'ai-directed',
+    name,
+    accent: `#${accentHex}`,
+    bg: `#${bgHex}`,
+    primaryText: `#${primaryHex}`,
+    textMuted: fb.textMuted,
+    fontFace
+  };
+};
+
+/** Shrink-to-fit + wrap; valign top keeps stacked regions from bleeding together. */
+const TEXT_FIT = { autoFit: true, breakLine: true, wrap: true, valign: 'top' };
+
+const textOpts = (props) => ({ ...TEXT_FIT, ...props });
+
+const chartColorPalette = (theme) => {
+  const a = hexNoHash(theme.accent);
+  const p = hexNoHash(theme.primaryText);
+  return [a, p, '3B82F6', 'D4AF37', 'A855F7', '14B8A6', 'F97316', 'EC4899'];
+};
+
+const normalizeChartData = (slide) => {
+  const cd = slide.chartData;
+  if (!cd || typeof cd !== 'object') return null;
+  let labels = Array.isArray(cd.labels) ? cd.labels.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+  let values = Array.isArray(cd.values)
+    ? cd.values.map((v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+      })
+    : [];
+  const n = Math.min(labels.length, values.length);
+  labels = labels.slice(0, n);
+  values = values.slice(0, n);
+  while (labels.length < 4) {
+    const i = labels.length + 1;
+    labels.push(`Segment ${i}`);
+    values.push(Math.round(12 + i * 7));
+  }
+  const cap = 12;
+  if (labels.length > cap) {
+    labels = labels.slice(0, cap);
+    values = values.slice(0, cap);
+  }
+  const chartTitle =
+    typeof cd.chartTitle === 'string' && cd.chartTitle.trim()
+      ? cd.chartTitle.trim()
+      : String(slide.title || 'Data').trim() || 'Data';
+  return { chartTitle, labels, values };
+};
+
 const normalizeTakeaways = (slide) => {
   const raw = slide.keyTakeaways;
   const list = Array.isArray(raw) ? raw.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -210,173 +247,281 @@ const applySpeakerNotes = (slideObj, slide) => {
 
 /** Full-bleed background + glass panel + rich text (fits 16:9 LAYOUT_16x9) */
 const renderClassicRichSlide = (slideObj, slide, theme) => {
-  const imageData = slide.imageData;
   const accent = hexNoHash(theme.accent);
 
-  if (imageData) {
-    slideObj.addImage({ data: imageData, x: '0%', y: '0%', w: '100%', h: '100%' });
-  } else {
-    slideObj.background = { color: theme.bg };
-  }
+  const ff = theme.fontFace || FONT_TITLE;
+  const primary = hexNoHash(theme.primaryText);
+  const muted = hexNoHash(theme.textMuted);
 
   slideObj.addShape('rect', {
     x: '5%',
     y: '5%',
     w: '90%',
     h: '90%',
-    fill: { color: '050A1F', transparency: 25 },
-    line: { color: 'FFFFFF', pt: 0.75 },
+    fill: { color: hexNoHash(theme.bg), transparency: 25 },
+    line: { color: primary, pt: 0.75 },
     rectRadius: 0.2
   });
 
-  const x = '8%';
-  const w = '84%';
+  slideObj.addText(
+    slide.title || 'Masterclass',
+    textOpts({
+      x: '10%',
+      y: '12%',
+      w: '80%',
+      h: '15%',
+      fontSize: 28,
+      color: primary,
+      bold: true,
+      fontFace: ff
+    })
+  );
 
-  slideObj.addText(slide.title || 'Masterclass', {
-    x,
-    y: '8%',
-    w,
-    h: '9%',
-    fontSize: 32,
-    color: 'FFFFFF',
-    bold: true,
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_TITLE
-  });
+  slideObj.addText(
+    slide.subtitle || '',
+    textOpts({
+      x: '10%',
+      y: '25%',
+      w: '80%',
+      h: '8%',
+      fontSize: 18,
+      color: accent,
+      bold: true,
+      fontFace: ff
+    })
+  );
 
-  slideObj.addText(slide.subtitle || '', {
-    x,
-    y: '17%',
-    w,
-    h: '6%',
-    fontSize: 18,
-    color: accent,
-    bold: true,
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_TITLE
-  });
-
-  slideObj.addText(slide.detailedParagraph || '', {
-    x,
-    y: '24%',
-    w,
-    h: '38%',
-    fontSize: 14,
-    color: 'F1F5F9',
-    wrap: true,
-    valign: 'top',
-    align: 'left',
-    fontFace: FONT_BODY
-  });
+  slideObj.addText(
+    slide.detailedParagraph || '',
+    textOpts({
+      x: '10%',
+      y: '35%',
+      w: '80%',
+      h: '25%',
+      fontSize: 17,
+      color: primary,
+      align: 'left',
+      fontFace: ff
+    })
+  );
 
   const bullets = normalizeTakeaways(slide).map((t) => ({
     text: t,
-    options: { bullet: true, indentLevel: 0 }
+    options: { bullet: true, indentLevel: 0, breakLine: true, autoFit: true }
   }));
 
-  slideObj.addText(bullets, {
-    x,
-    y: '64%',
-    w,
-    h: '28%',
-    fontSize: 12,
-    color: 'E2E8F0',
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_BODY
-  });
+  slideObj.addText(
+    bullets,
+    textOpts({
+      x: '10%',
+      y: '62%',
+      w: '80%',
+      h: '25%',
+      fontSize: 14,
+      color: muted,
+      bullet: true,
+      fontFace: ff
+    })
+  );
 
   applySpeakerNotes(slideObj, slide);
 };
 
 /** Left glass column; right side shows open cinematic background */
 const renderSplitRichSlide = (slideObj, slide, theme) => {
-  const imageData = slide.imageData;
   const accent = hexNoHash(theme.accent);
 
-  if (imageData) {
-    slideObj.addImage({ data: imageData, x: '0%', y: '0%', w: '100%', h: '100%' });
-  } else {
-    slideObj.background = { color: theme.bg };
-  }
+  const ff = theme.fontFace || FONT_TITLE;
+  const primary = hexNoHash(theme.primaryText);
+  const muted = hexNoHash(theme.textMuted);
 
   slideObj.addShape('rect', {
     x: '5%',
     y: '6%',
     w: '44%',
     h: '88%',
-    fill: { color: '050A1F', transparency: 25 },
-    line: { color: 'FFFFFF', pt: 0.75 },
+    fill: { color: hexNoHash(theme.bg), transparency: 25 },
+    line: { color: primary, pt: 0.75 },
     rectRadius: 0.15
   });
 
-  const x = '7%';
-  const w = '40%';
+  /** Same vertical grid as classic; x/w keep copy inside the left glass (≈5%–49%). */
+  const sx = '7%';
+  const sw = '40%';
 
-  slideObj.addText(slide.title || 'Deep dive', {
-    x,
-    y: '9%',
-    w,
-    h: '10%',
-    fontSize: 28,
-    color: 'FFFFFF',
-    bold: true,
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_TITLE
-  });
+  slideObj.addText(
+    slide.title || 'Deep dive',
+    textOpts({
+      x: sx,
+      y: '12%',
+      w: sw,
+      h: '15%',
+      fontSize: 24,
+      color: primary,
+      bold: true,
+      fontFace: ff
+    })
+  );
 
-  slideObj.addText(slide.subtitle || '', {
-    x,
-    y: '19%',
-    w,
-    h: '7%',
-    fontSize: 16,
-    color: accent,
-    bold: true,
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_TITLE
-  });
+  slideObj.addText(
+    slide.subtitle || '',
+    textOpts({
+      x: sx,
+      y: '25%',
+      w: sw,
+      h: '8%',
+      fontSize: 16,
+      color: accent,
+      bold: true,
+      fontFace: ff
+    })
+  );
 
-  slideObj.addText(slide.detailedParagraph || '', {
-    x,
-    y: '27%',
-    w,
-    h: '40%',
-    fontSize: 13,
-    color: 'F1F5F9',
-    wrap: true,
-    valign: 'top',
-    align: 'left',
-    fontFace: FONT_BODY
-  });
+  slideObj.addText(
+    slide.detailedParagraph || '',
+    textOpts({
+      x: sx,
+      y: '35%',
+      w: sw,
+      h: '25%',
+      fontSize: 15,
+      color: primary,
+      align: 'left',
+      fontFace: ff
+    })
+  );
 
   const bullets = normalizeTakeaways(slide).map((t) => ({
     text: t,
-    options: { bullet: true, indentLevel: 0 }
+    options: { bullet: true, indentLevel: 0, breakLine: true, autoFit: true }
   }));
 
-  slideObj.addText(bullets, {
-    x,
-    y: '68%',
-    w,
-    h: '22%',
-    fontSize: 11,
-    color: 'E2E8F0',
-    wrap: true,
-    valign: 'top',
-    fontFace: FONT_BODY
-  });
+  slideObj.addText(
+    bullets,
+    textOpts({
+      x: sx,
+      y: '62%',
+      w: sw,
+      h: '25%',
+      fontSize: 12,
+      color: muted,
+      bullet: true,
+      fontFace: ff
+    })
+  );
 
   applySpeakerNotes(slideObj, slide);
 };
 
-const renderSlideByLayout = (slideObj, slide, theme) => {
+/**
+ * Chart slides: hard-coded inch grid on LAYOUT_16x9 (10" × 5.625") — left column text, right column chart (no % overlap).
+ */
+const renderChartSlide = (pres, slideObj, slide, theme) => {
+  const accent = hexNoHash(theme.accent);
   const layout = slide.layoutType;
-  if (layout === 'split_rich') {
+  const chartKind = layout === 'chart_bar' ? pres.charts.BAR : pres.charts.PIE;
+  const cd = normalizeChartData(slide);
+  const palette = chartColorPalette(theme);
+  const ff = theme.fontFace || FONT_TITLE;
+  const primary = hexNoHash(theme.primaryText);
+  const plotFill = hexNoHash(theme.bg);
+
+  const GL = { x: 0.5, y: 0.32, w: 9.0, h: 5.05 };
+  const TITLE = { x: 0.55, y: 0.36, w: 8.9, h: 0.48 };
+  const SUB = { x: 0.55, y: 0.88, w: 8.9, h: 0.36 };
+  const TEXT_COL = { x: 0.55, y: 1.32, w: 4.35, h: 3.85 };
+  const CHART_COL = { x: 5.08, y: 1.32, w: 4.37, h: 3.85 };
+
+  slideObj.addShape('rect', {
+    x: GL.x,
+    y: GL.y,
+    w: GL.w,
+    h: GL.h,
+    fill: { color: hexNoHash(theme.bg), transparency: 25 },
+    line: { color: primary, pt: 0.75 },
+    rectRadius: 0.2
+  });
+
+  slideObj.addText(
+    slide.title || 'Insight',
+    textOpts({
+      x: TITLE.x,
+      y: TITLE.y,
+      w: TITLE.w,
+      h: TITLE.h,
+      fontSize: 22,
+      color: primary,
+      bold: true,
+      fontFace: ff
+    })
+  );
+
+  slideObj.addText(
+    slide.subtitle || '',
+    textOpts({
+      x: SUB.x,
+      y: SUB.y,
+      w: SUB.w,
+      h: SUB.h,
+      fontSize: 14,
+      color: accent,
+      bold: true,
+      fontFace: ff
+    })
+  );
+
+  slideObj.addText(
+    slide.detailedParagraph || '',
+    textOpts({
+      x: TEXT_COL.x,
+      y: TEXT_COL.y,
+      w: TEXT_COL.w,
+      h: TEXT_COL.h,
+      fontSize: 14,
+      color: primary,
+      align: 'left',
+      fontFace: ff,
+      autoFit: true,
+      breakLine: true,
+      valign: 'top',
+      wrap: true
+    })
+  );
+
+  if (cd) {
+    const series = [
+      {
+        name: cd.chartTitle,
+        labels: cd.labels,
+        values: cd.values
+      }
+    ];
+    const chartOpts = {
+      x: CHART_COL.x,
+      y: CHART_COL.y,
+      w: CHART_COL.w,
+      h: CHART_COL.h,
+      showLegend: true,
+      legendPos: 'b',
+      showTitle: false,
+      chartColors: palette,
+      plotArea: { fill: { color: plotFill, transparency: 35 } }
+    };
+    if (chartKind === pres.charts.BAR) {
+      chartOpts.barDir = 'col';
+      chartOpts.barGrouping = 'clustered';
+    }
+    slideObj.addChart(chartKind, series, chartOpts);
+  }
+
+  applySpeakerNotes(slideObj, slide);
+};
+
+const renderSlideByLayout = (pres, slideObj, slide, theme) => {
+  const layout = slide.layoutType;
+  if (layout === 'chart_pie' || layout === 'chart_bar') {
+    renderChartSlide(pres, slideObj, slide, theme);
+  } else if (layout === 'split_rich') {
     renderSplitRichSlide(slideObj, slide, theme);
   } else {
     renderClassicRichSlide(slideObj, slide, theme);
@@ -392,23 +537,33 @@ const generateSlidesWithGemini = async (prompt, research, signal) => {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: geminiModel,
-      systemInstruction: `You are a Masterclass Educator and Analyst. You design premium "deep-dive" presentation decks for discerning professionals.
+      systemInstruction: `You are a Masterclass Educator, Analyst, and Art Director. You design premium "deep-dive" presentation decks for discerning professionals.
+
+As Art Director: invent a completely custom, visually stunning color palette and font pairing in "theme" that perfectly matches the mood and industry of the user's prompt. Ensure high contrast between bgColor, primaryText, and accentColor.
 
 Your job: teach with depth, evidence, and clarity. Use the Research Context (including any PDF-derived text) as primary material when present. Ground keyTakeaways and detailedParagraph in that context.
 
-Output must match this JSON schema exactly (types and field names):
+Generate a highly comprehensive presentation: EXACTLY 10 to 14 slides in "slides". Leave no stone unturned from the provided context.
+
+Use layoutType classic_rich, split_rich, chart_pie, or chart_bar. Match the user's intent: financial/analytical prompts → mostly chart_pie and chart_bar; story/vision/narrative prompts → mostly classic_rich and split_rich. For chart layouts you MUST include chartData with realistic labels and numeric values.
+
+Output must match this JSON schema (types and field names):
 ${GEMINI_SLIDE_SCHEMA}`
     });
     throwIfAborted(signal);
-    const userText = `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY a raw JSON array.`;
+    const userText = `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY a JSON object with "theme" and "slides" as specified. No markdown.`;
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: userText }] }],
-      generationConfig: { responseMimeType: 'application/json' }
+      generationConfig: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 8192
+      }
     });
     throwIfAborted(signal);
     const response = await result.response;
     const raw = response.text();
-    return parseSlidesJson(raw);
+    console.log('[ai] Raw response length:', raw?.length);
+    return parsePresentationJson(raw);
   } catch (err) {
     if (err?.code === 'CLIENT_ABORT') throw err;
     const status = err?.status || err?.response?.status || err?.statusCode;
@@ -429,7 +584,7 @@ const generatePresentationContent = async (prompt, options = {}) => {
   const { researchFromPdf = null, onStatus, signal } = options;
   if (!prompt || !prompt.trim()) throw new Error('A prompt is required for generation.');
 
-  const theme = pickRandomTheme();
+  const fallbackTheme = pickRandomTheme();
 
   let research = '';
   if (researchFromPdf && String(researchFromPdf).trim().length > 0) {
@@ -439,20 +594,21 @@ const generatePresentationContent = async (prompt, options = {}) => {
   }
 
   onStatus?.('Gemini is designing the presentation...');
-  const slidesData = await generateSlidesWithGemini(prompt, research, signal);
+  const { slides: slidesData, theme: aiThemePayload } = await generateSlidesWithGemini(
+    prompt,
+    research,
+    signal
+  );
+  const theme = mergeAiTheme(aiThemePayload, fallbackTheme);
 
-  onStatus?.('Fetching 720p 16:9 backgrounds...');
-  const enrichedSlides = [];
-  for (const slide of slidesData) {
+  onStatus?.('Assigning slide background image URLs...');
+  const enrichedSlides = slidesData.map((slide) => {
     throwIfAborted(signal);
-    let imageData = null;
     const kw = slide.bgKeyword;
-    if (kw && String(kw).trim()) {
-      imageData = await fetchSlideBackground(String(kw).trim(), signal);
-    }
-    enrichedSlides.push({ ...slide, imageData });
-    await new Promise((r) => setTimeout(r, 1000));
-  }
+    const imageData =
+      kw && String(kw).trim() ? buildSlideBackgroundImageUrl(String(kw).trim()) : null;
+    return { ...slide, imageData };
+  });
 
   return {
     title: prompt,
@@ -463,7 +619,88 @@ const generatePresentationContent = async (prompt, options = {}) => {
   };
 };
 
-const buildPresentation = (content) => {
+const resolveDeckTheme = (content) => {
+  const raw = content?.theme;
+  if (raw && typeof raw === 'object' && raw.primaryText && raw.accent && raw.bg) {
+    return { ...raw, fontFace: raw.fontFace || FONT_TITLE };
+  }
+  return mergeAiTheme(null, raw || pickRandomTheme());
+};
+
+/** Solid fallback color for slide master (hex without #). */
+const cleanHex = (colorVal) => hexNoHash(colorVal || '0B1220');
+
+async function fetchImageAsBase64(url) {
+  const toDataUri = (response) => {
+    const base64 = Buffer.from(response.data, 'binary').toString('base64');
+    return `image/jpeg;base64,${base64}`;
+  };
+
+  try {
+    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+    return toDataUri(response);
+  } catch (error) {
+    console.error(`❌ [EXPORT ERROR] Failed to fetch image: ${url}`, error.message);
+    const fallbackUrl = `https://picsum.photos/seed/${Math.random()}/1280/720`;
+    console.log(`🔄 [EXPORT] Retrying with fallback: ${fallbackUrl}`);
+    try {
+      const response = await axios.get(fallbackUrl, {
+        responseType: 'arraybuffer',
+        timeout: 8000
+      });
+      return toDataUri(response);
+    } catch (fallbackErr) {
+      console.error(`❌ [EXPORT ERROR] Fallback fetch failed: ${fallbackUrl}`, fallbackErr.message);
+      return null;
+    }
+  }
+}
+
+/**
+ * Sequential HTTP fetches + 750ms spacing to avoid 429; data: URIs skip network.
+ * @returns {Promise<Array<{ data?: string, fill: string }>>}
+ */
+const resolveExportSlideBackgroundsSequential = async (presentationData, theme) => {
+  const slides = presentationData.slides;
+  const fallbackFill = cleanHex(theme.bgColor || theme.bg);
+  const resolvedImages = [];
+
+  console.log('⏳ [EXPORT] Downloading backgrounds sequentially to avoid 429 rate limits...');
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i];
+    const raw = slide?.imageData && String(slide.imageData).trim();
+    if (!raw) {
+      resolvedImages.push(null);
+      continue;
+    }
+    if (raw.startsWith('data:')) {
+      resolvedImages.push(raw);
+      continue;
+    }
+    if (/^https?:\/\//i.test(raw)) {
+      console.log(`⏳ [EXPORT] Fetching image ${i + 1}/${slides.length}...`);
+      const base64 = await fetchImageAsBase64(raw);
+      resolvedImages.push(base64);
+      await new Promise((r) => setTimeout(r, 750));
+    } else {
+      resolvedImages.push(null);
+    }
+  }
+  console.log('✅ [EXPORT] All backgrounds downloaded safely.');
+
+  return resolvedImages.map((dataUri) =>
+    dataUri ? { data: dataUri, fill: fallbackFill } : { fill: fallbackFill }
+  );
+};
+
+/** Apply prefetched background to pptxgen slide. */
+const applyExportSlideBackground = (slideObj, bgSpec) => {
+  if (bgSpec.data) slideObj.background = { data: bgSpec.data };
+  else slideObj.background = { fill: bgSpec.fill };
+};
+
+const buildPresentation = async (content) => {
+  console.log('🚀 [EXPORT] buildPresentation: initializing PptxGenJS (16:9)...');
   const pres = new PptxGenJS();
   pres.layout = 'LAYOUT_16x9';
 
@@ -471,25 +708,45 @@ const buildPresentation = (content) => {
     throw new Error('Presentation content must contain a valid slides array.');
   }
 
-  const theme = content.theme || pickRandomTheme();
+  console.log(`📋 [EXPORT] Resolving theme for ${content.slides.length} slide(s)...`);
+  const theme = resolveDeckTheme(content);
+  const ff = theme.fontFace || FONT_TITLE;
+  pres.theme = { headFontFace: ff, bodyFontFace: ff };
 
-  content.slides.forEach((slide) => {
+  const presentationData = { slides: content.slides };
+  const bgSpecs = await resolveExportSlideBackgroundsSequential(presentationData, theme);
+  console.log('✅ [EXPORT] Background resolution complete. Rendering slide content...');
+
+  for (let i = 0; i < content.slides.length; i++) {
+    const slide = content.slides[i];
+    console.log(`📄 [EXPORT] Building slide ${i + 1} / ${content.slides.length}...`);
     const slideObj = pres.addSlide();
-    renderSlideByLayout(slideObj, slide, theme);
-  });
+    applyExportSlideBackground(slideObj, bgSpecs[i]);
+    const slideForRender = { ...slide, imageData: null };
+    renderSlideByLayout(pres, slideObj, slideForRender, theme);
+  }
 
+  console.log('✅ [EXPORT] All slides rendered; finalizing presentation object.');
   return pres;
 };
 
 const createPowerPoint = async (content, fullPath) => {
-  const pres = buildPresentation(content);
+  console.log(`🚀 [EXPORT] createPowerPoint: writing file → ${fullPath}`);
+  const pres = await buildPresentation(content);
+  console.log('💾 [EXPORT] Writing PPTX to disk...');
   await pres.writeFile({ fileName: fullPath });
+  console.log('✅ [EXPORT] PPTX file write complete.');
   return fullPath;
 };
 
 const createPowerPointBuffer = async (content) => {
-  const pres = buildPresentation(content);
-  return pres.write({ outputType: 'nodebuffer' });
+  console.log('🚀 [EXPORT] createPowerPointBuffer: building in-memory PPTX...');
+  const pres = await buildPresentation(content);
+  console.log('📦 [EXPORT] Serializing PPTX to Node buffer...');
+  const buf = await pres.write({ outputType: 'nodebuffer' });
+  const bytes = Buffer.isBuffer(buf) ? buf.length : buf?.byteLength ?? 0;
+  console.log(`✅ [EXPORT] Buffer ready (${bytes} bytes).`);
+  return buf;
 };
 
 module.exports = {
