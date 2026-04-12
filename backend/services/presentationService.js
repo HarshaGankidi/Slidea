@@ -10,79 +10,42 @@ if (!fs.existsSync(presentationsDir)) fs.mkdirSync(presentationsDir, { recursive
 
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
-/** VC-style palettes — one deck uses one theme end-to-end */
+/** Accent + fallbacks for typography on glass panels */
 const DECK_THEMES = [
   {
     id: 'midnight-pink',
     name: 'Midnight Pink',
-    isDark: true,
-    bg: '#050A1F',
-    surface: '#0F1428',
     accent: '#FF0055',
-    text: '#FFFFFF',
-    textMuted: '#8892B0',
-    panel: '#F4F4F5',
-    panelText: '#0B1020'
+    textMuted: '#94A3B8',
+    bg: '#050A1F'
   },
   {
     id: 'corporate-blue',
     name: 'Corporate Blue',
-    isDark: true,
-    bg: '#0B1628',
-    surface: '#132238',
     accent: '#3B82F6',
-    text: '#FFFFFF',
     textMuted: '#94A3B8',
-    panel: '#EEF4FF',
-    panelText: '#0F172A'
-  },
-  {
-    id: 'minimal-light',
-    name: 'Minimalist Light',
-    isDark: false,
-    bg: '#FAFAFA',
-    surface: '#FFFFFF',
-    accent: '#0F172A',
-    text: '#0F172A',
-    textMuted: '#64748B',
-    panel: '#F1F5F9',
-    panelText: '#0F172A'
+    bg: '#0B1628'
   },
   {
     id: 'forest-gold',
     name: 'Forest & Gold',
-    isDark: true,
-    bg: '#0D1A14',
-    surface: '#152A22',
-    accent: '#C9A227',
-    text: '#F5F5F0',
+    accent: '#D4AF37',
     textMuted: '#A3B5A8',
-    panel: '#EEF2EA',
-    panelText: '#0D1A14'
+    bg: '#0D1A14'
   },
   {
     id: 'sunset-coral',
     name: 'Sunset Coral',
-    isDark: true,
-    bg: '#1A0A12',
-    surface: '#24101C',
     accent: '#FF6B6B',
-    text: '#FFF8F8',
     textMuted: '#C4A5AD',
-    panel: '#FFF0ED',
-    panelText: '#1A0A12'
+    bg: '#1A0A12'
   },
   {
     id: 'royal-violet',
     name: 'Royal Violet',
-    isDark: true,
-    bg: '#12081F',
-    surface: '#1C0F2E',
     accent: '#A855F7',
-    text: '#FFFFFF',
     textMuted: '#B8A5D6',
-    panel: '#F3E8FF',
-    panelText: '#12081F'
+    bg: '#12081F'
   }
 ];
 
@@ -110,22 +73,21 @@ const fetchResearch = async (topic) => {
 
 const GEMINI_SLIDE_SCHEMA = `[
   {
-    "layoutType": "cover" | "split" | "metrics" | "grid" | "quote" | "agenda",
+    "layoutType": "classic_rich" | "split_rich",
     "title": "string",
-    "bodyText": "string — one punchy line (max ~15 words); quote layout = the quote itself, still brief)",
-    "metrics": [{ "number": "string", "label": "string" }],
-    "imageKeyword": "short English phrase for a professional stock-style image",
-    "quadrants": [{ "title": "string", "body": "string" }],
-    "quoteAttribution": "optional string, speaker or source under the quote",
-    "agendaItems": [{ "title": "string", "detail": "string" }]
+    "subtitle": "string",
+    "detailedParagraph": "string",
+    "keyTakeaways": ["string", "string", "string"],
+    "speakerNotes": "string",
+    "bgKeyword": "string"
   }
 ]
 Rules:
-- Produce EXACTLY 8–10 slides with varied layouts (use each layout type at least once where sensible).
-- "metrics": exactly 3 items when layoutType is "metrics".
-- "quadrants": exactly 4 items when layoutType is "grid" (TL, TR, BL, BR).
-- "agendaItems": 4–6 items when layoutType is "agenda".
-- DO NOT write paragraphs. Write punchy, VC-style highlights (maximum 10–15 words per text field: title, bodyText, metric labels, quadrant bodies, agenda details). Use short, powerful phrases. The deck must feel like a premium Apple keynote, not a textbook.
+- Produce EXACTLY 8–10 slides. Alternate classic_rich (full glass card) and split_rich (left glass, right open background) for visual rhythm.
+- detailedParagraph: 3–4 full sentences of deep analysis or teaching — rich, precise, not shallow.
+- keyTakeaways: exactly 3 items; each a specific insight. When Research Context includes PDF or wiki text, root takeaways in that evidence.
+- speakerNotes: 2–5 sentences the presenter can read aloud; may reference the research context.
+- bgKeyword: short phrase for a cinematic 16:9 abstract corporate background (e.g. "deep blue geometry", "gold particle wave").
 - Return ONLY a raw JSON array, no markdown.`;
 
 const parseSlidesJson = (text) => {
@@ -145,14 +107,17 @@ const parseSlidesJson = (text) => {
   throw new Error('Invalid JSON format from AI');
 };
 
-const buildPollinationsUrl = (keyword) => {
-  const k = encodeURIComponent((keyword || 'modern business').trim());
-  return `https://image.pollinations.ai/prompt/${k}?width=800&height=800&nologo=true&seed=${Math.random()}`;
+const BG_W = 1280;
+const BG_H = 720;
+
+const buildPollinationsBgUrl = (bgKeyword) => {
+  const q = `${String(bgKeyword || 'abstract').trim()} classic elegant abstract deep colors corporate background`;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(q)}?width=${BG_W}&height=${BG_H}&nologo=true&seed=${Math.random()}`;
 };
 
-const buildPicsumUrl = (keyword) => {
-  const k = encodeURIComponent((keyword || 'presentation').trim());
-  return `https://picsum.photos/seed/${k}/800/800`;
+const buildPicsumBgUrl = (bgKeyword) => {
+  const k = encodeURIComponent((bgKeyword || 'presentation').trim());
+  return `https://picsum.photos/seed/${k}/${BG_W}/${BG_H}`;
 };
 
 const bufferToJpegDataUrl = (buf) => {
@@ -162,11 +127,12 @@ const bufferToJpegDataUrl = (buf) => {
   return 'image/jpeg;base64,' + Buffer.from(buf).toString('base64');
 };
 
-const fetchPollinationsImage = async (keyword) => {
-  const url = buildPollinationsUrl(keyword);
+const fetchPollinationsBackground = async (bgKeyword, signal) => {
+  const url = buildPollinationsBgUrl(bgKeyword);
   const response = await axios.get(url, {
     responseType: 'arraybuffer',
-    timeout: 20000,
+    timeout: 6000,
+    signal,
     validateStatus: () => true
   });
   if (response.status === 429) {
@@ -175,22 +141,19 @@ const fetchPollinationsImage = async (keyword) => {
     throw err;
   }
   if (response.status < 200 || response.status >= 300) {
-    const err = new Error(`POLLINATIONS_HTTP_${response.status}`);
-    err.code = 'POLLINATIONS_HTTP';
-    throw err;
+    throw new Error(`POLLINATIONS_HTTP_${response.status}`);
   }
   const dataUrl = bufferToJpegDataUrl(response.data);
-  if (!dataUrl) {
-    throw new Error('POLLINATIONS_EMPTY');
-  }
+  if (!dataUrl) throw new Error('POLLINATIONS_EMPTY');
   return dataUrl;
 };
 
-const fetchPicsumImage = async (keyword) => {
-  const url = buildPicsumUrl(keyword);
+const fetchPicsumBackground = async (bgKeyword, signal) => {
+  const url = buildPicsumBgUrl(bgKeyword);
   const response = await axios.get(url, {
     responseType: 'arraybuffer',
-    timeout: 20000,
+    timeout: 6000,
+    signal,
     maxRedirects: 5,
     validateStatus: () => true,
     headers: { 'User-Agent': 'Slidea/1.0 (+https://example.com)' }
@@ -203,337 +166,224 @@ const fetchPicsumImage = async (keyword) => {
   return dataUrl;
 };
 
-/**
- * Primary: Pollinations. On any failure: Picsum seeded by keyword. Never throws.
- */
-const fetchSlideImage = async (keyword) => {
-  if (!keyword || !String(keyword).trim()) return null;
-  const k = String(keyword).trim();
+const fetchSlideBackground = async (bgKeyword, signal) => {
+  if (!bgKeyword || !String(bgKeyword).trim()) return null;
+  const k = String(bgKeyword).trim();
   try {
-    return await fetchPollinationsImage(k);
-  } catch {
+    return await fetchPollinationsBackground(k, signal);
+  } catch (err) {
+    throwIfAborted(signal);
     try {
-      return await fetchPicsumImage(k);
+      return await fetchPicsumBackground(k, signal);
     } catch (backupErr) {
-      console.error('Slide image fallback failed:', backupErr.message);
+      throwIfAborted(signal);
+      console.error('Background image fallback failed:', backupErr.message);
       return null;
     }
   }
 };
 
-const normalizeQuadrants = (slide) => {
-  const q = slide.quadrants;
-  if (!Array.isArray(q)) return [{ title: 'Q1', body: '' }, { title: 'Q2', body: '' }, { title: 'Q3', body: '' }, { title: 'Q4', body: '' }];
-  const pad = (i) => q[i] || { title: `Area ${i + 1}`, body: '' };
-  return [pad(0), pad(1), pad(2), pad(3)];
-};
-
-const normalizeAgenda = (slide) => {
-  const items = slide.agendaItems;
-  if (!Array.isArray(items) || items.length === 0) {
-    return [
-      { title: slide.title || 'Agenda', detail: slide.bodyText || '' },
-      { title: 'Next', detail: '' },
-      { title: 'Next', detail: '' }
-    ];
+const throwIfAborted = (signal) => {
+  if (signal?.aborted) {
+    const err = new Error('Generation aborted: client disconnected');
+    err.code = 'CLIENT_ABORT';
+    throw err;
   }
-  return items.slice(0, 5);
 };
 
 const FONT_TITLE = 'Helvetica Neue';
 const FONT_BODY = 'Helvetica Neue';
 
-const renderCoverSlide = (slideObj, slideData, imageData, theme) => {
-  slideObj.background = theme.bg;
+const hexNoHash = (c) => String(c || 'FFFFFF').replace(/^#/, '');
 
-  if (imageData) {
-    slideObj.addImage({ data: imageData, x: '48%', y: '0%', w: '52%', h: '100%' });
-    slideObj.addShape('rect', {
-      x: '48%',
-      y: '0%',
-      w: '52%',
-      h: '100%',
-      fill: { color: '000000', transparency: 55 }
-    });
-  } else {
-    slideObj.addShape('rect', { x: '48%', y: '0%', w: '52%', h: '100%', fill: theme.accent });
-  }
-
-  slideObj.addText(slideData.title || 'Untitled Presentation', {
-    x: '5%',
-    y: '22%',
-    w: '40%',
-    fontSize: 48,
-    color: theme.isDark ? 'FFFFFF' : theme.text,
-    bold: true,
-    wrap: true,
-    fontFace: FONT_TITLE
-  });
-
-  slideObj.addText(slideData.bodyText || '', {
-    x: '5%',
-    y: '52%',
-    w: '40%',
-    fontSize: 17,
-    color: theme.textMuted,
-    wrap: true,
-    fontFace: FONT_BODY
-  });
+const normalizeTakeaways = (slide) => {
+  const raw = slide.keyTakeaways;
+  const list = Array.isArray(raw) ? raw.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  while (list.length < 3) list.push('Add detail from your research or session Q&A.');
+  return list.slice(0, 3);
 };
 
-const renderMetricsSlide = (slideObj, slideData, theme) => {
-  slideObj.background = theme.bg;
+const applySpeakerNotes = (slideObj, slide) => {
+  const notes = typeof slide.speakerNotes === 'string' ? slide.speakerNotes.trim() : '';
+  if (notes) slideObj.addNotes(notes);
+};
 
-  slideObj.addText(slideData.title || 'Key Metrics', {
-    x: '8%',
+/** Full-bleed background + glass panel + rich text (fits 16:9 LAYOUT_16x9) */
+const renderClassicRichSlide = (slideObj, slide, theme) => {
+  const imageData = slide.imageData;
+  const accent = hexNoHash(theme.accent);
+
+  if (imageData) {
+    slideObj.addImage({ data: imageData, x: '0%', y: '0%', w: '100%', h: '100%' });
+  } else {
+    slideObj.background = { color: theme.bg };
+  }
+
+  slideObj.addShape('rect', {
+    x: '5%',
+    y: '5%',
+    w: '90%',
+    h: '90%',
+    fill: { color: '050A1F', transparency: 25 },
+    line: { color: 'FFFFFF', pt: 0.75 },
+    rectRadius: 0.2
+  });
+
+  const x = '8%';
+  const w = '84%';
+
+  slideObj.addText(slide.title || 'Masterclass', {
+    x,
     y: '8%',
-    w: '84%',
-    fontSize: 38,
-    color: theme.isDark ? 'FFFFFF' : theme.text,
-    bold: true,
-    align: 'center',
-    wrap: true,
-    fontFace: FONT_TITLE
-  });
-
-  const metrics = slideData.metrics || [];
-  const cards = [
-    { x: '7%', y: '36%', w: '26%', h: '48%' },
-    { x: '37%', y: '36%', w: '26%', h: '48%' },
-    { x: '67%', y: '36%', w: '26%', h: '48%' }
-  ];
-
-  const cardFill = theme.surface || '1E293B';
-  const cardLine = theme.accent;
-
-  metrics.slice(0, 3).forEach((metric, idx) => {
-    const c = cards[idx];
-    slideObj.addShape('roundRect', {
-      x: c.x,
-      y: c.y,
-      w: c.w,
-      h: c.h,
-      fill: { color: cardFill.replace(/^#/, '') },
-      line: { color: cardLine.replace(/^#/, ''), pt: 1 }
-    });
-    slideObj.addText(metric.number || '0', {
-      x: c.x,
-      y: `${parseFloat(c.y) + 8}%`,
-      w: c.w,
-      h: '22%',
-      fontSize: 44,
-      color: theme.accent,
-      bold: true,
-      align: 'center',
-      valign: 'middle',
-      wrap: true,
-      fontFace: FONT_TITLE
-    });
-    slideObj.addText(metric.label || 'Value', {
-      x: c.x,
-      y: `${parseFloat(c.y) + 30}%`,
-      w: c.w,
-      h: '14%',
-      fontSize: 14,
-      color: theme.textMuted,
-      wrap: true,
-      align: 'center',
-      valign: 'top',
-      fontFace: FONT_BODY
-    });
-  });
-};
-
-const SPLIT_LEFT_BG = '#050A1F';
-
-const renderSplitSlide = (slideObj, slideData, imageData, theme) => {
-  slideObj.background = SPLIT_LEFT_BG;
-
-  slideObj.addShape('rect', { x: '0%', y: '0%', w: '50%', h: '100%', fill: SPLIT_LEFT_BG });
-  slideObj.addShape('rect', { x: '49%', y: '0%', w: '1%', h: '100%', fill: theme.accent });
-
-  if (imageData) {
-    slideObj.addImage({ data: imageData, x: '50%', y: '0%', w: '50%', h: '100%' });
-    slideObj.addShape('rect', {
-      x: '50%',
-      y: '0%',
-      w: '50%',
-      h: '100%',
-      fill: { color: '000000', transparency: 55 }
-    });
-  } else {
-    slideObj.addShape('rect', { x: '50%', y: '0%', w: '50%', h: '100%', fill: theme.accent });
-  }
-
-  slideObj.addText(slideData.title || 'Analysis', {
-    x: '6%',
-    y: '16%',
-    w: '38%',
-    fontSize: 34,
+    w,
+    h: '9%',
+    fontSize: 32,
     color: 'FFFFFF',
     bold: true,
     wrap: true,
+    valign: 'top',
     fontFace: FONT_TITLE
   });
 
-  slideObj.addText(slideData.bodyText || '', {
-    x: '6%',
-    y: '32%',
-    w: '38%',
-    h: '58%',
-    fontSize: 15,
-    color: theme.textMuted,
+  slideObj.addText(slide.subtitle || '', {
+    x,
+    y: '17%',
+    w,
+    h: '6%',
+    fontSize: 18,
+    color: accent,
+    bold: true,
+    wrap: true,
+    valign: 'top',
+    fontFace: FONT_TITLE
+  });
+
+  slideObj.addText(slide.detailedParagraph || '', {
+    x,
+    y: '24%',
+    w,
+    h: '38%',
+    fontSize: 14,
+    color: 'F1F5F9',
     wrap: true,
     valign: 'top',
     align: 'left',
     fontFace: FONT_BODY
   });
+
+  const bullets = normalizeTakeaways(slide).map((t) => ({
+    text: t,
+    options: { bullet: true, indentLevel: 0 }
+  }));
+
+  slideObj.addText(bullets, {
+    x,
+    y: '64%',
+    w,
+    h: '28%',
+    fontSize: 12,
+    color: 'E2E8F0',
+    wrap: true,
+    valign: 'top',
+    fontFace: FONT_BODY
+  });
+
+  applySpeakerNotes(slideObj, slide);
 };
 
-const renderGridSlide = (slideObj, slideData, theme) => {
-  slideObj.background = theme.bg;
-  const quads = normalizeQuadrants(slideData);
-  const positions = [
-    { x: '5%', y: '20%', w: '44%', h: '34%' },
-    { x: '51%', y: '20%', w: '44%', h: '34%' },
-    { x: '5%', y: '56%', w: '44%', h: '38%' },
-    { x: '51%', y: '56%', w: '44%', h: '38%' }
-  ];
+/** Left glass column; right side shows open cinematic background */
+const renderSplitRichSlide = (slideObj, slide, theme) => {
+  const imageData = slide.imageData;
+  const accent = hexNoHash(theme.accent);
 
-  slideObj.addText(slideData.title || 'Framework', {
+  if (imageData) {
+    slideObj.addImage({ data: imageData, x: '0%', y: '0%', w: '100%', h: '100%' });
+  } else {
+    slideObj.background = { color: theme.bg };
+  }
+
+  slideObj.addShape('rect', {
     x: '5%',
     y: '6%',
-    w: '90%',
+    w: '44%',
+    h: '88%',
+    fill: { color: '050A1F', transparency: 25 },
+    line: { color: 'FFFFFF', pt: 0.75 },
+    rectRadius: 0.15
+  });
+
+  const x = '7%';
+  const w = '40%';
+
+  slideObj.addText(slide.title || 'Deep dive', {
+    x,
+    y: '9%',
+    w,
+    h: '10%',
     fontSize: 28,
-    color: theme.text,
+    color: 'FFFFFF',
     bold: true,
     wrap: true,
-    fontFace: 'Arial'
+    valign: 'top',
+    fontFace: FONT_TITLE
   });
 
-  quads.forEach((cell, i) => {
-    const p = positions[i];
-    slideObj.addShape('rect', {
-      x: p.x,
-      y: p.y,
-      w: p.w,
-      h: p.h,
-      fill: theme.surface,
-      line: { color: theme.accent, pt: 0.75 }
-    });
-    slideObj.addText(cell.title || `Area ${i + 1}`, {
-      x: p.x,
-      y: p.y,
-      w: p.w,
-      h: '12%',
-      fontSize: 15,
-      color: theme.accent,
-      bold: true,
-      wrap: true,
-      align: 'center',
-      valign: 'middle',
-      fontFace: 'Arial'
-    });
-    slideObj.addText(cell.body || '', {
-      x: p.x,
-      y: `${parseFloat(p.y) + 10}%`,
-      w: p.w,
-      h: `${Math.max(12, parseFloat(p.h) - 12)}%`,
-      fontSize: 12,
-      color: theme.textMuted,
-      wrap: true,
-      valign: 'top',
-      align: 'center',
-      fontFace: 'Arial'
-    });
+  slideObj.addText(slide.subtitle || '', {
+    x,
+    y: '19%',
+    w,
+    h: '7%',
+    fontSize: 16,
+    color: accent,
+    bold: true,
+    wrap: true,
+    valign: 'top',
+    fontFace: FONT_TITLE
   });
+
+  slideObj.addText(slide.detailedParagraph || '', {
+    x,
+    y: '27%',
+    w,
+    h: '40%',
+    fontSize: 13,
+    color: 'F1F5F9',
+    wrap: true,
+    valign: 'top',
+    align: 'left',
+    fontFace: FONT_BODY
+  });
+
+  const bullets = normalizeTakeaways(slide).map((t) => ({
+    text: t,
+    options: { bullet: true, indentLevel: 0 }
+  }));
+
+  slideObj.addText(bullets, {
+    x,
+    y: '68%',
+    w,
+    h: '22%',
+    fontSize: 11,
+    color: 'E2E8F0',
+    wrap: true,
+    valign: 'top',
+    fontFace: FONT_BODY
+  });
+
+  applySpeakerNotes(slideObj, slide);
 };
 
-const renderQuoteSlide = (slideObj, slideData, theme) => {
-  slideObj.background = theme.bg;
-  const quote = slideData.bodyText || slideData.title || '"Your story here."';
-  const attr = slideData.quoteAttribution || slideData.title || '';
-
-  slideObj.addText(quote, {
-    x: '10%',
-    y: '28%',
-    w: '80%',
-    fontSize: 36,
-    color: theme.text,
-    italic: true,
-    align: 'center',
-    wrap: true,
-    valign: 'middle',
-    fontFace: 'Georgia'
-  });
-
-  if (attr && attr !== quote) {
-    slideObj.addText(`— ${attr}`, {
-      x: '10%',
-      y: '68%',
-      w: '80%',
-      fontSize: 18,
-      color: theme.accent,
-      align: 'center',
-      wrap: true,
-      fontFace: 'Arial'
-    });
+const renderSlideByLayout = (slideObj, slide, theme) => {
+  const layout = slide.layoutType;
+  if (layout === 'split_rich') {
+    renderSplitRichSlide(slideObj, slide, theme);
+  } else {
+    renderClassicRichSlide(slideObj, slide, theme);
   }
 };
 
-const renderAgendaSlide = (slideObj, slideData, theme) => {
-  slideObj.background = theme.bg;
-  const items = normalizeAgenda(slideData);
-
-  slideObj.addText(slideData.title || 'Agenda', {
-    x: '8%',
-    y: '8%',
-    w: '84%',
-    fontSize: 34,
-    color: theme.text,
-    bold: true,
-    wrap: true,
-    fontFace: 'Arial'
-  });
-
-  let y = 22;
-  items.forEach((item, idx) => {
-    const num = String(idx + 1);
-    slideObj.addText(num, {
-      x: '8%',
-      y: `${y}%`,
-      w: '6%',
-      fontSize: 28,
-      color: theme.accent,
-      bold: true,
-      fontFace: 'Arial'
-    });
-    slideObj.addText(item.title || `Item ${num}`, {
-      x: '16%',
-      y: `${y}%`,
-      w: '76%',
-      fontSize: 22,
-      color: theme.text,
-      bold: true,
-      wrap: true,
-      fontFace: 'Arial'
-    });
-    slideObj.addText(item.detail || '', {
-      x: '16%',
-      y: `${y + 7}%`,
-      w: '76%',
-      h: '8%',
-      fontSize: 14,
-      color: theme.textMuted,
-      wrap: true,
-      valign: 'top',
-      fontFace: 'Arial'
-    });
-    y += 16;
-  });
-};
-
-const generateSlidesWithGemini = async (prompt, research) => {
+const generateSlidesWithGemini = async (prompt, research, signal) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('Gemini API Error: Missing GEMINI_API_KEY');
@@ -542,24 +392,25 @@ const generateSlidesWithGemini = async (prompt, research) => {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: geminiModel,
-      systemInstruction: `You are an elite VC Pitch Deck designer. Use the Research Context and the user's Prompt.
+      systemInstruction: `You are a Masterclass Educator and Analyst. You design premium "deep-dive" presentation decks for discerning professionals.
 
-Copy discipline (non-negotiable):
-- DO NOT write paragraphs. Write punchy, VC-style highlights (maximum 10–15 words per text block).
-- Use short, powerful phrases only. The layout must feel like a premium Apple keynote, not a textbook.
+Your job: teach with depth, evidence, and clarity. Use the Research Context (including any PDF-derived text) as primary material when present. Ground keyTakeaways and detailedParagraph in that context.
 
+Output must match this JSON schema exactly (types and field names):
 ${GEMINI_SLIDE_SCHEMA}`
     });
-    const userText = `Research Context:\n${research || '(none)'}\n\nPrompt:\n${prompt}\n\nReturn ONLY a raw JSON array.`;
+    throwIfAborted(signal);
+    const userText = `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY a raw JSON array.`;
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: userText }] }],
       generationConfig: { responseMimeType: 'application/json' }
     });
+    throwIfAborted(signal);
     const response = await result.response;
     const raw = response.text();
-    const slides = parseSlidesJson(raw);
-    return slides;
+    return parseSlidesJson(raw);
   } catch (err) {
+    if (err?.code === 'CLIENT_ABORT') throw err;
     const status = err?.status || err?.response?.status || err?.statusCode;
     if (status === 401 || status === 429) {
       throw new Error('Gemini API Error: Check your API key and quota');
@@ -572,10 +423,10 @@ ${GEMINI_SLIDE_SCHEMA}`
 
 /**
  * @param {string} prompt
- * @param {{ researchFromPdf?: string|null, onStatus?: (msg: string) => void }} [options]
+ * @param {{ researchFromPdf?: string|null, onStatus?: (msg: string) => void, signal?: AbortSignal }} [options]
  */
 const generatePresentationContent = async (prompt, options = {}) => {
-  const { researchFromPdf = null, onStatus } = options;
+  const { researchFromPdf = null, onStatus, signal } = options;
   if (!prompt || !prompt.trim()) throw new Error('A prompt is required for generation.');
 
   const theme = pickRandomTheme();
@@ -588,18 +439,19 @@ const generatePresentationContent = async (prompt, options = {}) => {
   }
 
   onStatus?.('Gemini is designing the presentation...');
-  const slidesData = await generateSlidesWithGemini(prompt, research);
+  const slidesData = await generateSlidesWithGemini(prompt, research, signal);
 
-  onStatus?.('Fetching high-res background images...');
+  onStatus?.('Fetching 720p 16:9 backgrounds...');
   const enrichedSlides = [];
   for (const slide of slidesData) {
+    throwIfAborted(signal);
     let imageData = null;
-    const kw = slide.imageKeyword;
+    const kw = slide.bgKeyword;
     if (kw && String(kw).trim()) {
-      imageData = await fetchSlideImage(String(kw).trim());
+      imageData = await fetchSlideBackground(String(kw).trim(), signal);
     }
     enrichedSlides.push({ ...slide, imageData });
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
   return {
@@ -627,33 +479,6 @@ const buildPresentation = (content) => {
   });
 
   return pres;
-};
-
-const renderSlideByLayout = (slideObj, slide, theme) => {
-  const layout = slide.layoutType;
-  const imageData = slide.imageData;
-
-  switch (layout) {
-    case 'cover':
-      renderCoverSlide(slideObj, slide, imageData, theme);
-      break;
-    case 'metrics':
-      renderMetricsSlide(slideObj, slide, theme);
-      break;
-    case 'grid':
-      renderGridSlide(slideObj, slide, theme);
-      break;
-    case 'quote':
-      renderQuoteSlide(slideObj, slide, theme);
-      break;
-    case 'agenda':
-      renderAgendaSlide(slideObj, slide, theme);
-      break;
-    case 'split':
-    default:
-      renderSplitSlide(slideObj, slide, imageData, theme);
-      break;
-  }
 };
 
 const createPowerPoint = async (content, fullPath) => {

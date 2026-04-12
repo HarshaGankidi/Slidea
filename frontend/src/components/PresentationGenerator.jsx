@@ -11,8 +11,10 @@ const previewImageSrc = (imageData) => {
 };
 
 const SlidePreviewCard = ({ slide, index, accent }) => {
-  const layout = slide.layoutType || 'split';
+  const layout = slide.layoutType || 'classic_rich';
   const imgSrc = previewImageSrc(slide.imageData);
+  const isMasterclass = layout === 'classic_rich' || layout === 'split_rich';
+  const takeaways = Array.isArray(slide.keyTakeaways) ? slide.keyTakeaways.filter(Boolean).slice(0, 5) : [];
 
   return (
     <div className="rounded-2xl overflow-hidden flex flex-col bg-white shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/80 hover:ring-slate-300 hover:shadow-xl transition-all duration-300">
@@ -32,62 +34,60 @@ const SlidePreviewCard = ({ slide, index, accent }) => {
 
       {imgSrc ? (
         <div className="px-5 pt-3">
-          <img src={imgSrc} alt="slide preview" className="w-full h-48 object-cover rounded-md mb-4" />
+          <div className="relative w-full h-48 rounded-md overflow-hidden mb-4">
+            <img src={imgSrc} alt="slide preview" className="w-full h-full object-cover" />
+            <div
+              className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px] border border-white/10 pointer-events-none"
+              aria-hidden
+            />
+          </div>
         </div>
       ) : null}
 
       <div className={`p-5 flex flex-col gap-3 flex-1 ${imgSrc ? 'pt-0' : ''}`}>
         <h3 className="text-lg font-black text-slate-900 leading-tight tracking-tight">{slide.title || 'Untitled'}</h3>
-        {slide.bodyText ? (
-          <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">{slide.bodyText}</p>
-        ) : null}
 
-        {layout === 'metrics' && Array.isArray(slide.metrics) && (
-          <div className="flex flex-wrap gap-2 mt-1">
-            {slide.metrics.slice(0, 3).map((m, i) => (
-              <div
-                key={i}
-                className="rounded-xl bg-slate-50 px-3 py-2 border border-slate-100/80 shadow-sm"
-                style={{ borderLeftWidth: 3, borderLeftColor: accent || '#6366f1' }}
-              >
-                <div className="text-xl font-black tabular-nums" style={{ color: accent || '#4f46e5' }}>
-                  {m.number}
-                </div>
-                <div className="text-xs text-slate-500 font-semibold">{m.label}</div>
+        {isMasterclass ? (
+          <>
+            {slide.subtitle ? (
+              <p className="text-sm font-bold" style={{ color: accent || '#4f46e5' }}>
+                {slide.subtitle}
+              </p>
+            ) : null}
+            {slide.detailedParagraph ? (
+              <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">{slide.detailedParagraph}</p>
+            ) : null}
+            {takeaways.length > 0 ? (
+              <ul className="list-disc list-inside text-sm text-slate-700 space-y-1 font-medium">
+                {takeaways.map((t, i) => (
+                  <li key={i}>{t}</li>
+                ))}
+              </ul>
+            ) : null}
+            {slide.speakerNotes ? (
+              <div className="mt-1 rounded-xl bg-amber-50/90 border border-amber-100 px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-amber-800 mb-1">Speaker notes</p>
+                <p className="text-xs text-amber-950/90 leading-snug">{slide.speakerNotes}</p>
               </div>
-            ))}
-          </div>
-        )}
-
-        {layout === 'grid' && Array.isArray(slide.quadrants) && (
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {slide.quadrants.slice(0, 4).map((q, i) => (
-              <div key={i} className="rounded-lg bg-slate-50/90 p-2.5 border border-slate-100">
-                <div className="font-bold text-slate-800">{q.title}</div>
-                <div className="text-slate-600 mt-0.5 leading-snug">{q.body}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {layout === 'agenda' && Array.isArray(slide.agendaItems) && (
-          <ol className="list-decimal list-inside text-sm text-slate-700 space-y-1.5 font-medium">
-            {slide.agendaItems.map((it, i) => (
-              <li key={i}>
-                <span className="font-bold text-slate-900">{it.title}</span>
-                {it.detail ? <span className="text-slate-500"> — {it.detail}</span> : null}
-              </li>
-            ))}
-          </ol>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {slide.bodyText ? (
+              <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">{slide.bodyText}</p>
+            ) : null}
+          </>
         )}
 
         {!imgSrc && (
           <div className="mt-auto pt-3 border-t border-slate-100">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Visual</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Background</p>
             <div className="h-28 rounded-xl bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 border border-dashed border-slate-200 flex flex-col items-center justify-center px-3">
-              <p className="text-xs font-semibold text-slate-500">No image — accent in export</p>
-              {slide.imageKeyword ? (
-                <p className="text-[10px] text-slate-400 mt-1 font-mono truncate max-w-full">{slide.imageKeyword}</p>
+              <p className="text-xs font-semibold text-slate-500">No 16:9 background yet</p>
+              {(slide.bgKeyword || slide.imageKeyword) ? (
+                <p className="text-[10px] text-slate-400 mt-1 font-mono truncate max-w-full">
+                  {slide.bgKeyword || slide.imageKeyword}
+                </p>
               ) : null}
             </div>
           </div>
@@ -207,7 +207,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     }
 
     const slidesLite = stripImageData(previewData.slides);
-    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nCurrent slide deck (keep layoutType values where sensible; revise content to satisfy the refinement):\n${JSON.stringify(slidesLite)}`;
+    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nCurrent slide deck (each slide: layoutType classic_rich or split_rich; title, subtitle, detailedParagraph, keyTakeaways[3], speakerNotes, bgKeyword). Keep that shape; revise content to satisfy the refinement:\n${JSON.stringify(slidesLite)}`;
 
     setRefineText('');
     await runStreamGenerate({

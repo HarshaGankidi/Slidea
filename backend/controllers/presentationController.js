@@ -25,6 +25,11 @@ const writeSse = (res, payload) => {
 const presentationController = {
   generatePresentation: async (req, res) => {
     let sseActive = false;
+    const abortController = new AbortController();
+    const onClientClose = () => {
+      abortController.abort();
+    };
+
     try {
       const prompt = (req.body?.prompt || '').trim();
       const titleRaw = (req.body?.title || '').trim();
@@ -37,6 +42,8 @@ const presentationController = {
       }
 
       sseActive = true;
+      req.on('close', onClientClose);
+
       res.status(200);
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -59,6 +66,7 @@ const presentationController = {
 
       const content = await generatePresentationContent(prompt, {
         researchFromPdf,
+        signal: abortController.signal,
         onStatus: (message) => writeSse(res, { type: 'status', message })
       });
 
@@ -78,8 +86,10 @@ const presentationController = {
         }
       });
     } catch (error) {
-      console.error('GENERATE ERROR:', error);
-      console.error(error?.stack);
+      if (error?.code !== 'CLIENT_ABORT') {
+        console.error('GENERATE ERROR:', error);
+        console.error(error?.stack);
+      }
       if (!sseActive) {
         return res.status(500).json({
           success: false,
@@ -89,15 +99,30 @@ const presentationController = {
       try {
         writeSse(res, {
           type: 'error',
-          message: error.message || 'Internal Server Error'
+          message:
+            error?.code === 'CLIENT_ABORT'
+              ? 'Connection closed — generation stopped.'
+              : error.message || 'Internal Server Error'
         });
       } catch (writeErr) {
         console.error('SSE error write failed:', writeErr?.message);
       }
     } finally {
       if (sseActive) {
+        req.removeListener('close', onClientClose);
+      }
+      if (sseActive) {
         try {
-          res.end();
+          if (!res.writableEnded) {
+            res.write('event: done\ndata: {}\n\n');
+          }
+        } catch (doneErr) {
+          console.error('SSE done event write failed:', doneErr?.message);
+        }
+        try {
+          if (!res.writableEnded) {
+            res.end();
+          }
         } catch (endErr) {
           console.error('SSE end failed:', endErr?.message);
         }
