@@ -552,18 +552,41 @@ ${GEMINI_SLIDE_SCHEMA}`
     });
     throwIfAborted(signal);
     const userText = `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY a JSON object with "theme" and "slides" as specified. No markdown.`;
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: userText }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        maxOutputTokens: 8192
+
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const result = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: userText }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            maxOutputTokens: 8192
+          }
+        });
+        throwIfAborted(signal);
+        const response = await result.response;
+        const raw = response.text();
+        console.log('[ai] Raw response length:', raw?.length);
+        return parsePresentationJson(raw);
+      } catch (error) {
+        throwIfAborted(signal);
+        const msg = String(error?.message || '');
+        const is503ish =
+          msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('unavailable');
+
+        if (is503ish && attempt < MAX_RETRIES) {
+          console.warn(
+            `[API] Gemini 503 Error. Retrying attempt ${attempt + 1} in ${attempt * 2.5}s...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 2500));
+          continue;
+        }
+        throw error; // Out of retries or a different error
       }
-    });
-    throwIfAborted(signal);
-    const response = await result.response;
-    const raw = response.text();
-    console.log('[ai] Raw response length:', raw?.length);
-    return parsePresentationJson(raw);
+    }
+
+    // Unreachable, but keeps function shape explicit.
+    throw new Error('Gemini API Error: Request failed after retries');
   } catch (err) {
     if (err?.code === 'CLIENT_ABORT') throw err;
     const status = err?.status || err?.response?.status || err?.statusCode;
@@ -571,6 +594,19 @@ ${GEMINI_SLIDE_SCHEMA}`
       throw new Error('Gemini API Error: Check your API key and quota');
     }
     const msg = typeof err?.message === 'string' ? err.message : 'Unknown error';
+    const msgLower = msg.toLowerCase();
+    const is503ish =
+      status === 503 ||
+      msg.includes('503') ||
+      msgLower.includes('high demand') ||
+      msgLower.includes('service unavailable') ||
+      msgLower.includes('unavailable');
+    if (is503ish) {
+      console.error('Gemini generation failed (503/high demand):', msg);
+      throw new Error(
+        'Gemini API Error: The AI service is experiencing high demand. Please try again in a moment.'
+      );
+    }
     console.error('Gemini generation failed:', msg);
     throw new Error('Gemini API Error: ' + msg);
   }
