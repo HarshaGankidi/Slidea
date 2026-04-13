@@ -324,7 +324,11 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
           terminal = true;
           clearPollInterval();
           setLoading(false);
-          setError(state.error);
+          const errMsg =
+            state.error?.message ||
+            (typeof state.error === 'string' ? state.error : '') ||
+            'Unknown Server Error';
+          setError(errMsg);
           return;
         }
 
@@ -570,8 +574,12 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                 <JobStatusTerminal loading={loading} statusLines={statusLines} />
 
                 {error && (
-                  <div className="p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg text-red-800 font-medium flex items-center">
-                    <span className="mr-3 text-xl">⚠️</span> {error}
+                  <div className="text-red-500 flex flex-col items-center p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg">
+                    <span className="text-4xl mb-2">⚠️</span>
+                    <span className="font-bold">Generation Failed</span>
+                    <span className="text-sm opacity-80 mt-1">
+                      {error?.message || error || 'Unknown Server Error'}
+                    </span>
                   </div>
                 )}
 
@@ -643,8 +651,12 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
             </div>
 
             {error && (
-              <div className="rounded-xl border border-red-500/40 bg-red-950/50 p-4 font-medium text-red-200 backdrop-blur-sm">
-                {error}
+              <div className="text-red-200 flex flex-col items-center rounded-xl border border-red-500/40 bg-red-950/50 p-4 font-medium backdrop-blur-sm">
+                <span className="text-4xl mb-2">⚠️</span>
+                <span className="font-bold">Generation Failed</span>
+                <span className="text-sm opacity-80 mt-1">
+                  {error?.message || error || 'Unknown Server Error'}
+                </span>
               </div>
             )}
             {success && !error && (

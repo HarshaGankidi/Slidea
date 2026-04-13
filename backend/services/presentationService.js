@@ -5,6 +5,14 @@ const axios = require('axios');
 const PptxGenJS = require('pptxgenjs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Failsafe check
+if (!process.env.GEMINI_API_KEY) {
+  console.error("FATAL ERROR: GEMINI_API_KEY is missing from the environment variables.");
+}
+
+// Initialize the global instance for the service
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
 const presentationsDir = path.join(__dirname, '../presentations');
 if (!fs.existsSync(presentationsDir)) fs.mkdirSync(presentationsDir, { recursive: true });
 
@@ -81,22 +89,26 @@ const GEMINI_SLIDE_SCHEMA = `{
   },
   "slides": [
     {
-      "layoutType": "classic_rich" | "split_rich" | "chart_pie" | "chart_bar",
+      "layoutStyle": "cinematic_cover" | "split_left" | "split_right" | "metrics_row" | "timeline" | "chart_donut" | "chart_bar" | "massive_quote",
       "title": "string",
       "subtitle": "string",
       "detailedParagraph": "string",
       "keyTakeaways": ["string", "string", "string"],
       "speakerNotes": "string",
       "bgKeyword": "string",
+      "metrics": [{ "label": "string", "value": "string" }, { "label": "string", "value": "string" }, { "label": "string", "value": "string" }],
+      "timeline": [{ "year": "string", "event": "string" }, { "year": "string", "event": "string" }, { "year": "string", "event": "string" }],
       "chartData": { "chartTitle": "string", "labels": ["A", "B", "C", "D"], "values": [10, 20, 30, 40] }
     }
   ]
 }
 Rules:
-- You are also the Art Director: invent a completely custom, visually stunning color palette and font pairing that perfectly matches the mood and industry of the user's prompt. Ensure high contrast (readable primaryText on glass over bgColor). theme.fontFace may be a common system font (e.g. Helvetica Neue, Georgia, Arial).
-- Produce EXACTLY between 10 and 14 slides in "slides". **Adapt layouts to the user's prompt:** financials/metrics/KPIs → heavily favor chart_pie and chart_bar; narrative/story/vision → favor classic_rich and split_rich.
-- For chart_pie or chart_bar: chartData REQUIRED (4–8 labels, matching values).
-- For classic_rich and split_rich: chartData omitted or null; keyTakeaways as before.
+- You are an Elite Art Director. You MUST heavily vary the layoutStyle. Never use the same layout twice in a row.
+- Produce EXACTLY between 10 and 14 slides in "slides".
+- Adapt layouts to the user's prompt: growth/KPIs → favor metrics_row and chart_bar or chart_donut; history/future/roadmap → favor timeline; narrative/story/vision → use split_left/split_right and cinematic_cover; emphasis/credibility → massive_quote.
+- For chart_bar or chart_donut: chartData REQUIRED (4–8 labels, matching values). Invent highly specific, realistic data based on the prompt.
+- For metrics_row: metrics REQUIRED (exactly 3 objects).
+- For timeline: timeline REQUIRED (exactly 3 objects).
 - detailedParagraph, speakerNotes, bgKeyword as before.
 - Return ONLY valid JSON: one object with "theme" and "slides". No markdown.`;
 
@@ -518,99 +530,455 @@ const renderChartSlide = (pres, slideObj, slide, theme) => {
 };
 
 const renderSlideByLayout = (pres, slideObj, slide, theme) => {
-  const layout = slide.layoutType;
-  if (layout === 'chart_pie' || layout === 'chart_bar') {
-    renderChartSlide(pres, slideObj, slide, theme);
-  } else if (layout === 'split_rich') {
-    renderSplitRichSlide(slideObj, slide, theme);
-  } else {
-    renderClassicRichSlide(slideObj, slide, theme);
-  }
-};
+  const styleRaw = slide.layoutStyle || slide.layoutType || 'split_left';
+  const style = String(styleRaw).trim();
 
-const generateSlidesWithGemini = async (prompt, research, signal) => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('Gemini API Error: Missing GEMINI_API_KEY');
-  }
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: geminiModel,
-      systemInstruction: `You are a Masterclass Educator, Analyst, and Art Director. You design premium "deep-dive" presentation decks for discerning professionals.
+  // Back-compat mapping for older schema names.
+  const mapped =
+    style === 'classic_rich'
+      ? 'split_left'
+      : style === 'split_rich'
+        ? 'split_left'
+        : style === 'chart_pie'
+          ? 'chart_donut'
+          : style;
 
-As Art Director: invent a completely custom, visually stunning color palette and font pairing in "theme" that perfectly matches the mood and industry of the user's prompt. Ensure high contrast between bgColor, primaryText, and accentColor.
+  const bgFill = cleanHex(theme.bgColor || theme.bg);
+  const primary = cleanHex(theme.primaryText);
+  const accent = cleanHex(theme.accentColor || theme.accent);
+  const ff = theme.fontFace || FONT_TITLE;
 
-Your job: teach with depth, evidence, and clarity. Use the Research Context (including any PDF-derived text) as primary material when present. Ground keyTakeaways and detailedParagraph in that context.
-
-Generate a highly comprehensive presentation: EXACTLY 10 to 14 slides in "slides". Leave no stone unturned from the provided context.
-
-Use layoutType classic_rich, split_rich, chart_pie, or chart_bar. Match the user's intent: financial/analytical prompts → mostly chart_pie and chart_bar; story/vision/narrative prompts → mostly classic_rich and split_rich. For chart layouts you MUST include chartData with realistic labels and numeric values.
-
-Output must match this JSON schema (types and field names):
-${GEMINI_SLIDE_SCHEMA}`
+  const addGlass = (x, y, w, h, transparency = 25) => {
+    slideObj.addShape('rect', {
+      x,
+      y,
+      w,
+      h,
+      fill: { color: bgFill, transparency },
+      line: { color: primary, pt: 0.75 },
+      rectRadius: 0.2
     });
-    throwIfAborted(signal);
-    const userText = `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY a JSON object with "theme" and "slides" as specified. No markdown.`;
+  };
 
-    const MAX_RETRIES = 3;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: userText }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            maxOutputTokens: 8192
-          }
-        });
-        throwIfAborted(signal);
-        const response = await result.response;
-        const raw = response.text();
-        console.log('[ai] Raw response length:', raw?.length);
-        return parsePresentationJson(raw);
-      } catch (error) {
-        throwIfAborted(signal);
-        const msg = String(error?.message || '');
-        const is503ish =
-          msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('unavailable');
+  const addTitle = (text, opts) => {
+    slideObj.addText(text || '', textOpts({ fontFace: ff, ...opts }));
+  };
 
-        if (is503ish && attempt < MAX_RETRIES) {
-          console.warn(
-            `[API] Gemini 503 Error. Retrying attempt ${attempt + 1} in ${attempt * 2.5}s...`
-          );
-          await new Promise((resolve) => setTimeout(resolve, attempt * 2500));
-          continue;
-        }
-        throw error; // Out of retries or a different error
-      }
+  const addBody = (text, opts) => {
+    slideObj.addText(text || '', textOpts({ fontFace: ff, ...opts }));
+  };
+
+  const addBullets = (items, opts) => {
+    const bullets = (Array.isArray(items) ? items : [])
+      .map((t) => String(t || '').trim())
+      .filter(Boolean)
+      .slice(0, 5)
+      .map((t) => ({
+        text: t,
+        options: { bullet: true, indentLevel: 0, breakLine: true, autoFit: true }
+      }));
+    if (bullets.length) {
+      slideObj.addText(bullets, textOpts({ fontFace: ff, ...opts, bullet: true }));
     }
+  };
 
-    // Unreachable, but keeps function shape explicit.
-    throw new Error('Gemini API Error: Request failed after retries');
-  } catch (err) {
-    if (err?.code === 'CLIENT_ABORT') throw err;
-    const status = err?.status || err?.response?.status || err?.statusCode;
-    if (status === 401 || status === 429) {
-      throw new Error('Gemini API Error: Check your API key and quota');
+  const renderSafeFallbackLayout = () => {
+    addGlass(0.7, 0.9, 8.6, 3.9, 20);
+    addTitle(slide?.title || 'Slide', {
+      x: 0.9,
+      y: 1.1,
+      w: 8.2,
+      h: 0.6,
+      fontSize: 28,
+      color: primary,
+      bold: true
+    });
+    addBody(slide?.subtitle || '', {
+      x: 0.9,
+      y: 1.7,
+      w: 8.2,
+      h: 0.4,
+      fontSize: 14,
+      color: accent,
+      bold: true
+    });
+    addBody(slide?.detailedParagraph || '', {
+      x: 0.9,
+      y: 2.15,
+      w: 8.2,
+      h: 2.4,
+      fontSize: 14,
+      color: primary,
+      align: 'left',
+      autoFit: true,
+      breakLine: true
+    });
+    applySpeakerNotes(slideObj, slide);
+  };
+
+  if (mapped === 'cinematic_cover' || mapped === 'massive_quote') {
+    addGlass(1.0, 1.5, 8.0, 2.6, 25);
+    const quoteText =
+      mapped === 'massive_quote'
+        ? slide.title || slide.subtitle || slide.detailedParagraph || 'A bold point.'
+        : slide.title || 'Company Name';
+    addTitle(quoteText, {
+      x: 1.2,
+      y: 1.8,
+      w: 7.6,
+      h: 2.0,
+      color: primary,
+      fontSize: 44,
+      bold: true,
+      align: 'center',
+      autoFit: true,
+      breakLine: true
+    });
+
+    if (mapped === 'cinematic_cover') {
+      addBody(slide.subtitle || '', {
+        x: 1.2,
+        y: 3.55,
+        w: 7.6,
+        h: 0.45,
+        color: accent,
+        fontSize: 18,
+        bold: true,
+        align: 'center',
+        autoFit: true,
+        breakLine: true
+      });
     }
-    const msg = typeof err?.message === 'string' ? err.message : 'Unknown error';
-    const msgLower = msg.toLowerCase();
-    const is503ish =
-      status === 503 ||
-      msg.includes('503') ||
-      msgLower.includes('high demand') ||
-      msgLower.includes('service unavailable') ||
-      msgLower.includes('unavailable');
-    if (is503ish) {
-      console.error('Gemini generation failed (503/high demand):', msg);
-      throw new Error(
-        'Gemini API Error: The AI service is experiencing high demand. Please try again in a moment.'
+    applySpeakerNotes(slideObj, slide);
+    return;
+  }
+
+  if (mapped === 'split_left' || mapped === 'split_right') {
+    const glassX = mapped === 'split_left' ? 0.5 : 5.0;
+    addGlass(glassX, 0.6, 4.5, 4.5, 25);
+    const pad = 0.25;
+    const tx = glassX + pad;
+    const tw = 4.5 - pad * 2;
+    addTitle(slide.title || 'Deep dive', {
+      x: tx,
+      y: 0.85,
+      w: tw,
+      h: 0.6,
+      fontSize: 26,
+      color: primary,
+      bold: true
+    });
+    addBody(slide.subtitle || '', {
+      x: tx,
+      y: 1.45,
+      w: tw,
+      h: 0.4,
+      fontSize: 15,
+      color: accent,
+      bold: true
+    });
+    addBody(slide.detailedParagraph || '', {
+      x: tx,
+      y: 1.9,
+      w: tw,
+      h: 2.0,
+      fontSize: 14,
+      color: primary,
+      align: 'left',
+      autoFit: true,
+      breakLine: true
+    });
+    addBullets(normalizeTakeaways(slide), {
+      x: tx,
+      y: 3.95,
+      w: tw,
+      h: 1.05,
+      fontSize: 12,
+      color: cleanHex(theme.textMuted || primary)
+    });
+    applySpeakerNotes(slideObj, slide);
+    return;
+  }
+
+  if (mapped === 'metrics_row') {
+    addTitle(slide.title || 'Key metrics', {
+      x: 0.7,
+      y: 0.65,
+      w: 8.6,
+      h: 0.5,
+      fontSize: 28,
+      color: primary,
+      bold: true
+    });
+    addBody(slide.subtitle || '', {
+      x: 0.7,
+      y: 1.12,
+      w: 8.6,
+      h: 0.35,
+      fontSize: 14,
+      color: accent,
+      bold: true
+    });
+
+    let metrics = [];
+    if (slide?.metrics && Array.isArray(slide.metrics)) {
+      metrics = slide.metrics.slice(0, 3);
+    }
+    for (let i = 0; i < 3; i++) {
+      const metric = metrics[i] || { value: '', label: '' };
+      const baseX = 0.8 + i * 3.0;
+      slideObj.addShape('rect', {
+        x: baseX,
+        y: 2.0,
+        w: 2.4,
+        h: 2.0,
+        fill: { color: bgFill, transparency: 15 },
+        line: { color: primary, pt: 0.75 },
+        rectRadius: 0.2
+      });
+      slideObj.addText(
+        String(metric.value || ''),
+        textOpts({
+          x: 0.9 + i * 3.0,
+          y: 2.2,
+          w: 2.2,
+          h: 0.8,
+          fontSize: 48,
+          bold: true,
+          color: accent,
+          align: 'center',
+          autoFit: true,
+          breakLine: true,
+          fontFace: ff
+        })
+      );
+      slideObj.addText(
+        String(metric.label || ''),
+        textOpts({
+          x: 0.9 + i * 3.0,
+          y: 3.0,
+          w: 2.2,
+          h: 0.5,
+          fontSize: 16,
+          color: primary,
+          align: 'center',
+          autoFit: true,
+          breakLine: true,
+          fontFace: ff
+        })
       );
     }
-    console.error('Gemini generation failed:', msg);
-    throw new Error('Gemini API Error: ' + msg);
+    applySpeakerNotes(slideObj, slide);
+    return;
+  }
+
+  if (mapped === 'timeline') {
+    addTitle(slide.title || 'Roadmap', {
+      x: 0.7,
+      y: 0.65,
+      w: 8.6,
+      h: 0.5,
+      fontSize: 28,
+      color: primary,
+      bold: true
+    });
+    addBody(slide.subtitle || '', {
+      x: 0.7,
+      y: 1.12,
+      w: 8.6,
+      h: 0.35,
+      fontSize: 14,
+      color: accent,
+      bold: true
+    });
+
+    // Connector line (exact instruction form).
+    slideObj.addShape(pres.ShapeType.line, {
+      x: 1.0,
+      y: 3.0,
+      w: 8.0,
+      h: 0,
+      line: { color: accent, width: 2 }
+    });
+
+    let steps = [];
+    if (slide?.timeline && Array.isArray(slide.timeline)) {
+      steps = slide.timeline.slice(0, 3);
+    }
+    for (let i = 0; i < 3; i++) {
+      const step = steps[i] || { year: '', event: '' };
+      const bx = 1.2 + i * 2.8;
+      slideObj.addShape('rect', {
+        x: bx,
+        y: 2.0,
+        w: 2.0,
+        h: 0.8,
+        fill: { color: bgFill, transparency: 15 },
+        line: { color: primary, pt: 0.75 },
+        rectRadius: 0.15
+      });
+      slideObj.addText(
+        String(step.year || ''),
+        textOpts({
+          x: bx,
+          y: 2.08,
+          w: 2.0,
+          h: 0.32,
+          fontSize: 18,
+          bold: true,
+          color: accent,
+          align: 'center',
+          fontFace: ff
+        })
+      );
+      slideObj.addText(
+        String(step.event || ''),
+        textOpts({
+          x: bx,
+          y: 2.42,
+          w: 2.0,
+          h: 0.55,
+          fontSize: 12,
+          color: primary,
+          align: 'center',
+          autoFit: true,
+          breakLine: true,
+          fontFace: ff
+        })
+      );
+    }
+    applySpeakerNotes(slideObj, slide);
+    return;
+  }
+
+  if (mapped === 'chart_donut' || mapped === 'chart_bar') {
+    addTitle(slide.title || 'Insight', {
+      x: 0.5,
+      y: 0.55,
+      w: 9.0,
+      h: 0.55,
+      fontSize: 26,
+      color: primary,
+      bold: true
+    });
+    addBody(slide.subtitle || '', {
+      x: 0.5,
+      y: 1.05,
+      w: 9.0,
+      h: 0.35,
+      fontSize: 14,
+      color: accent,
+      bold: true
+    });
+    addBody(slide.detailedParagraph || '', {
+      x: 0.5,
+      y: 1.5,
+      w: 4.0,
+      h: 3.5,
+      fontSize: 14,
+      color: primary,
+      align: 'left',
+      autoFit: true,
+      breakLine: true
+    });
+
+    const cd = normalizeChartData(slide);
+    if (cd) {
+      const series = [
+        {
+          name: cd.chartTitle,
+          labels: cd.labels,
+          values: cd.values
+        }
+      ];
+      const chartType =
+        mapped === 'chart_bar'
+          ? pres.ChartType?.bar || pres.charts?.BAR
+          : pres.ChartType?.doughnut || pres.charts?.DOUGHNUT || pres.charts?.PIE;
+      const chartOpts = {
+        x: 5.0,
+        y: 1.0,
+        w: 4.5,
+        h: 4.0,
+        showLegend: true,
+        legendPos: 'b',
+        showTitle: false,
+        chartColors: [accent, 'FFFFFF', 'AAAAAA', primary],
+        plotArea: { fill: { color: bgFill, transparency: 35 } }
+      };
+      slideObj.addChart(chartType, series, chartOpts);
+    }
+    applySpeakerNotes(slideObj, slide);
+    return;
+  }
+
+  // Fallback: keep rendering safe even if model deviates.
+  try {
+    renderSplitRichSlide(slideObj, slide, theme);
+  } catch (e) {
+    console.error('[LAYOUT ERROR] Fallback layout failed:', e?.message);
+    renderSafeFallbackLayout();
   }
 };
+
+async function generateSlidesWithGemini(promptText) {
+  const MAX_RETRIES = 4;
+  let lastError;
+
+  console.log('🚀 [API] Starting Gemini Generation with 2.5-flash...');
+
+  // PHASE 1: Primary Model Loop (gemini-2.5-flash)
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const model = genAI.getGenerativeModel({ 
+        model: "gemini-2.5-flash",
+        systemInstruction: "You are an Elite Art Director and Masterclass Educator. You must generate a highly comprehensive, deeply detailed presentation containing EXACTLY 10 to 14 slides. Leave no stone unturned. You MUST output raw, valid JSON containing an array of slide objects. Schema: [{ 'layoutStyle': 'cinematic_cover' | 'split_left' | 'split_right' | 'metrics_row' | 'timeline' | 'chart_donut' | 'chart_bar' | 'massive_quote', 'title': '...', 'subtitle': '...', 'detailedParagraph': '...', 'keyTakeaways': ['...'], 'speakerNotes': '...', 'bgKeyword': '...', 'theme': { 'bgColor': 'HEX', 'primaryText': 'HEX', 'accentColor': 'HEX' }, 'metrics': [{'label': '...', 'value': '...'}], 'timeline': [{'year': '...', 'event': '...'}] }]"
+      });
+
+      const result = await model.generateContent(promptText);
+      const text = result.response.text();
+      
+      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      return JSON.parse(jsonStr);
+
+    } catch (error) {
+      lastError = error;
+      const isOverloaded = error.message.includes('503') || error.message.includes('high demand') || error.message.includes('429') || error.message.includes('overloaded');
+      
+      if (isOverloaded) {
+        if (attempt < MAX_RETRIES) {
+          console.warn(`⚠️ [API] 2.5-flash Overloaded (Attempt ${attempt}). Waiting ${attempt * 4}s...`);
+          await new Promise(resolve => setTimeout(resolve, attempt * 4000));
+        } else {
+          console.warn(`⚠️ [API] 2.5-flash exhausted all ${MAX_RETRIES} retries.`);
+        }
+      } else {
+        // If it's a JSON parsing error or 400 Bad Request, throw immediately
+        console.error('❌ [API] Non-503 Error encountered:', error.message);
+        throw error; 
+      }
+    }
+  }
+
+  // PHASE 2: Fallback to Backup Model (gemini-2.5-flash-lite)
+  console.log('🔄 [API] Routing to highly-available backup model (gemini-2.5-flash-lite)...');
+  try {
+    const backupModel = genAI.getGenerativeModel({ 
+      model: "gemini-2.5-flash-lite",
+      systemInstruction: "You are an Elite Art Director and Masterclass Educator. You must generate a highly comprehensive, deeply detailed presentation containing EXACTLY 10 to 14 slides. Leave no stone unturned. You MUST output raw, valid JSON containing an array of slide objects. Schema: [{ 'layoutStyle': 'cinematic_cover' | 'split_left' | 'split_right' | 'metrics_row' | 'timeline' | 'chart_donut' | 'chart_bar' | 'massive_quote', 'title': '...', 'subtitle': '...', 'detailedParagraph': '...', 'keyTakeaways': ['...'], 'speakerNotes': '...', 'bgKeyword': '...', 'theme': { 'bgColor': 'HEX', 'primaryText': 'HEX', 'accentColor': 'HEX' }, 'metrics': [{'label': '...', 'value': '...'}], 'timeline': [{'year': '...', 'event': '...'}] }]"
+    });
+
+    const backupResult = await backupModel.generateContent(promptText);
+    const backupText = backupResult.response.text();
+    
+    const backupJsonStr = backupText.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(backupJsonStr);
+
+  } catch (fallbackError) {
+    console.error('❌ [API] Backup model also failed:', fallbackError.message);
+    throw new Error('Gemini API Error: All Google AI servers are currently at maximum capacity. Please try again in 60 seconds.');
+  }
+}
 
 /**
  * @param {string} prompt
@@ -630,11 +998,38 @@ const generatePresentationContent = async (prompt, options = {}) => {
   }
 
   onStatus?.('Gemini is designing the presentation...');
-  const { slides: slidesData, theme: aiThemePayload } = await generateSlidesWithGemini(
-    prompt,
-    research,
-    signal
-  );
+  const promptText = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `Research Context (PDF excerpt, wiki, or none):\n${research || '(none)'}\n\nUser topic / instructions:\n${prompt}\n\nReturn ONLY raw, valid JSON. No markdown.`
+          }
+        ]
+      }
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      maxOutputTokens: 8192
+    }
+  };
+
+  const aiPayload = await generateSlidesWithGemini(promptText);
+  const normalized = (() => {
+    if (Array.isArray(aiPayload)) return { slides: aiPayload, theme: null };
+    if (aiPayload && typeof aiPayload === 'object' && Array.isArray(aiPayload.slides)) {
+      return { slides: aiPayload.slides, theme: aiPayload.theme || null };
+    }
+    // Some model outputs embed theme per-slide; extract first theme if present.
+    if (aiPayload && typeof aiPayload === 'object' && Array.isArray(aiPayload) === false) {
+      // fall through
+    }
+    throw new Error('Gemini API Error: Invalid JSON shape from AI');
+  })();
+
+  const slidesData = normalized.slides;
+  const aiThemePayload = normalized.theme;
   const theme = mergeAiTheme(aiThemePayload, fallbackTheme);
 
   onStatus?.('Assigning slide background image URLs...');
@@ -759,7 +1154,47 @@ const buildPresentation = async (content) => {
     const slideObj = pres.addSlide();
     applyExportSlideBackground(slideObj, bgSpecs[i]);
     const slideForRender = { ...slide, imageData: null };
-    renderSlideByLayout(pres, slideObj, slideForRender, theme);
+    try {
+      renderSlideByLayout(pres, slideObj, slideForRender, theme);
+    } catch (e) {
+      console.error(`[LAYOUT ERROR] Slide ${i} failed:`, e?.message);
+      // Safe fallback layout for this slide so the overall export survives.
+      const bgFill = cleanHex(theme.bgColor || theme.bg);
+      const primary = cleanHex(theme.primaryText);
+      const ff = theme.fontFace || FONT_TITLE;
+      slideObj.addShape('rect', {
+        x: 0.7,
+        y: 0.9,
+        w: 8.6,
+        h: 3.9,
+        fill: { color: bgFill, transparency: 20 },
+        line: { color: primary, pt: 0.75 },
+        rectRadius: 0.2
+      });
+      slideObj.addText(String(slideForRender?.title || 'Slide'), textOpts({
+        x: 0.9,
+        y: 1.1,
+        w: 8.2,
+        h: 0.6,
+        fontSize: 28,
+        color: primary,
+        bold: true,
+        fontFace: ff
+      }));
+      slideObj.addText(String(slideForRender?.detailedParagraph || slideForRender?.subtitle || ''), textOpts({
+        x: 0.9,
+        y: 1.75,
+        w: 8.2,
+        h: 2.9,
+        fontSize: 14,
+        color: primary,
+        fontFace: ff,
+        align: 'left',
+        autoFit: true,
+        breakLine: true
+      }));
+      applySpeakerNotes(slideObj, slideForRender);
+    }
   }
 
   console.log('✅ [EXPORT] All slides rendered; finalizing presentation object.');
