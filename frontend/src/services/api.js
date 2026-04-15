@@ -14,24 +14,11 @@ const presentationsBase = () => `${(apiClient.defaults.baseURL || '').replace(/\
 /** POST /presentations/generate — multipart; returns { jobId } (202) */
 export const getGeneratePresentationUrl = () => `${presentationsBase()}/generate`;
 
-/** POST /presentations/export — JSON body, binary .pptx response */
-export const exportPresentationBlob = async ({ title, slides, theme, prompt }) => {
-  const res = await fetch(`${presentationsBase()}/export`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, slides, theme, prompt })
-  });
-
-  if (!res.ok) {
-    const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.message || `Export failed (${res.status})`);
-    }
-    throw new Error(`Export failed (${res.status})`);
-  }
-
-  return res.blob();
+/** @deprecated Server export removed — build .pptx in the browser (see PresentationGenerator). */
+export const exportPresentationBlob = async () => {
+  throw new Error(
+    'Server-side export is deprecated. Use the in-app Download PowerPoint button (client-side html2canvas + pptxgenjs).'
+  );
 };
 
 /** Start async generation; poll {@link getPresentationJobStatus} until isComplete. */

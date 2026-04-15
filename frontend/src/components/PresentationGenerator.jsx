@@ -1,185 +1,59 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { exportPresentationBlob, getPresentationJobStatus, startPresentationJob } from '../services/api';
+import html2canvas from 'html2canvas';
+import PptxGenJS from 'pptxgenjs';
+import { getPresentationJobStatus, startPresentationJob } from '../services/api';
+import PresentationViewer from './PresentationViewer';
 
 const JOB_POLL_MS = 2000;
 
-const stripImageData = (slides) => (slides || []).map(({ imageData, ...rest }) => rest);
+/** Strip embedded base64 data URIs from slide HTML for refinement payloads. */
+const stripBase64ForRefinement = (slides) =>
+  (slides || []).map((s) => ({
+    ...s,
+    html: typeof s.html === 'string'
+      ? s.html.replace(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g, '{{IMAGE_1}}')
+      : s.html,
+    imageKeywords: s.imageKeywords || []
+  }));
 
-/** Bulletproof slide hero image: primary URL with instant Picsum fallback on error (CORS/malformed URL). */
-const SlidePreviewImage = ({ slide, index }) => {
-  const primary =
-    (typeof slide.imageData === 'string' && slide.imageData.trim()) ||
-    `https://picsum.photos/seed/${index}/800/450`;
-  const fallback = `https://picsum.photos/seed/${(slide.title || `slide${index}`).replace(/\s+/g, '')}/800/450`;
+/** Inject Google Fonts dynamically. Returns cleanup fn. */
+const injectGoogleFonts = (headingFont, bodyFont) => {
+  const LINK_ID = 'slidea-google-fonts';
+  const families = [headingFont, bodyFont]
+    .filter(Boolean)
+    .map((f) => `family=${encodeURIComponent(f)}:wght@400;500;600;700;800;900`)
+    .join('&');
+  if (!families) return () => {};
 
-  return (
-    <img
-      src={primary}
-      alt="Slide Preview"
-      className="absolute inset-0 h-full w-full object-cover"
-      referrerPolicy="no-referrer"
-      onError={(e) => {
-        const el = e.currentTarget;
-        el.onerror = null;
-        el.src = fallback;
-      }}
-    />
-  );
-};
-
-const CHART_HUES = [265, 200, 45, 330, 160, 25, 310, 190];
-
-const SlideMiniChart = ({ layout, chartData, accent }) => {
-  const labels = Array.isArray(chartData?.labels) ? chartData.labels : [];
-  const values = Array.isArray(chartData?.values) ? chartData.values.map((v) => Number(v) || 0) : [];
-  if (!labels.length || !values.length) return null;
-  const n = Math.min(labels.length, values.length, 8);
-  const L = labels.slice(0, n);
-  const V = values.slice(0, n);
-  const max = Math.max(...V, 1);
-
-  if (layout === 'chart_pie') {
-    const total = V.reduce((a, b) => a + b, 0) || 1;
-    let acc = 0;
-    const stops = V.map((v, i) => {
-      const pct = (v / total) * 100;
-      const start = acc;
-      acc += pct;
-      const hue = CHART_HUES[i % CHART_HUES.length];
-      return `hsl(${hue} 72% 52%) ${start}% ${acc}%`;
-    }).join(', ');
-    return (
-      <div
-        className="mx-auto mt-2 h-20 w-20 shrink-0 rounded-full border border-white/25 shadow-inner ring-2 ring-white/10"
-        style={{ background: `conic-gradient(${stops})` }}
-        title={chartData?.chartTitle || 'Distribution'}
-      />
-    );
+  let link = document.getElementById(LINK_ID);
+  if (!link) {
+    link = document.createElement('link');
+    link.id = LINK_ID;
+    link.rel = 'stylesheet';
+    document.head.appendChild(link);
   }
+  link.href = `https://fonts.googleapis.com/css2?${families}&display=swap`;
 
-  return (
-    <div className="mt-2 flex h-14 items-end justify-center gap-1.5 px-1">
-      {V.map((v, i) => (
-        <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-0.5">
-          <div
-            className="w-full max-w-[12px] rounded-t-sm opacity-95 shadow-sm"
-            style={{
-              height: `${Math.max(6, Math.round((v / max) * 52))}px`,
-              backgroundColor: accent || '#818cf8',
-              filter: `hue-rotate(${i * 28}deg)`
-            }}
-          />
-          <span className="max-w-full truncate text-[6px] font-mono uppercase tracking-wider text-slate-400">
-            {String(L[i]).slice(0, 3)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
+  return () => {
+    const el = document.getElementById(LINK_ID);
+    if (el) el.remove();
+  };
 };
 
-const SlidePreviewCard = ({ slide, index, accent, primaryText }) => {
-  const layout = slide.layoutType || 'classic_rich';
-  const isChart = layout === 'chart_pie' || layout === 'chart_bar';
-  const isMasterclass = layout === 'classic_rich' || layout === 'split_rich' || isChart;
-  const takeaways = Array.isArray(slide.keyTakeaways) ? slide.keyTakeaways.filter(Boolean).slice(0, 5) : [];
-  const titleColor = primaryText || '#f8fafc';
-  const fallbackBg = `linear-gradient(135deg, ${accent || '#4f46e5'}33 0%, #0f172a 50%, #020617 100%)`;
+/** Inject Tailwind CDN Play script for runtime class compilation. */
+const injectTailwindCDN = () => {
+  const SCRIPT_ID = 'slidea-tailwind-cdn';
+  if (document.getElementById(SCRIPT_ID)) return () => {};
 
-  return (
-    <div className="group rounded-2xl p-[1px] shadow-xl shadow-indigo-950/20 ring-1 ring-white/10 transition-all duration-500 hover:shadow-[0_0_32px_rgba(99,102,241,0.25)] hover:ring-indigo-400/30">
-      <div className="overflow-hidden rounded-2xl bg-slate-950">
-        <div className="flex items-center justify-between border-b border-white/10 bg-black/40 px-3 py-2 backdrop-blur-md">
-          <span className="text-[10px] font-mono uppercase tracking-[0.25em] text-slate-500">Slide {index + 1}</span>
-          <span
-            className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-white"
-            style={{ color: accent || '#a5b4fc' }}
-          >
-            {layout}
-          </span>
-        </div>
+  const script = document.createElement('script');
+  script.id = SCRIPT_ID;
+  script.src = 'https://cdn.tailwindcss.com';
+  document.head.appendChild(script);
 
-        <div className="relative aspect-video w-full overflow-hidden">
-          <div className="absolute inset-0" style={{ background: fallbackBg }} aria-hidden />
-          <SlidePreviewImage slide={slide} index={index} />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/75 to-slate-950/35" />
-          <div className="absolute inset-0 border border-white/5 bg-white/5 backdrop-blur-[3px]" />
-
-          <div className="relative flex h-full flex-col p-4 sm:p-5">
-            <h3
-              className="text-sm font-black leading-tight tracking-wide drop-shadow sm:text-base"
-              style={{ color: titleColor }}
-            >
-              {slide.title || 'Untitled'}
-            </h3>
-            {slide.subtitle ? (
-              <p
-                className="mt-1 text-[11px] font-bold tracking-wide text-white/90 sm:text-xs"
-                style={{ color: accent || '#c4b5fd' }}
-              >
-                {slide.subtitle}
-              </p>
-            ) : null}
-
-            {isChart ? (
-              <div className="mt-3 grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
-                <div className="min-h-0 overflow-hidden rounded-lg border border-white/10 bg-black/25 p-2 backdrop-blur-sm">
-                  {slide.detailedParagraph ? (
-                    <p className="text-[10px] leading-relaxed tracking-wide text-slate-200/95 sm:text-[11px]">
-                      {slide.detailedParagraph}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="flex min-h-[5rem] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-2 backdrop-blur-sm">
-                  {slide.chartData ? (
-                    <SlideMiniChart layout={layout} chartData={slide.chartData} accent={accent} />
-                  ) : (
-                    <p className="text-[10px] tracking-wide text-slate-500">Chart data</p>
-                  )}
-                  {slide.chartData?.chartTitle ? (
-                    <p className="mt-1 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-400">
-                      {slide.chartData.chartTitle}
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {isMasterclass && !isChart ? (
-              <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
-                {slide.detailedParagraph ? (
-                  <p className="text-[10px] leading-relaxed tracking-wide text-slate-200/95 sm:text-[11px]">
-                    {slide.detailedParagraph}
-                  </p>
-                ) : null}
-                {takeaways.length > 0 ? (
-                  <ul className="space-y-1 text-[10px] font-medium tracking-wide text-slate-300/95 sm:text-[11px]">
-                    {takeaways.map((t, i) => (
-                      <li key={i} className="flex gap-2">
-                        <span className="text-indigo-400">▸</span>
-                        <span>{t}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
-
-            {!isMasterclass && slide.bodyText ? (
-              <p className="mt-2 text-[10px] tracking-wide text-slate-300">{slide.bodyText}</p>
-            ) : null}
-
-            {slide.speakerNotes ? (
-              <div className="mt-auto border-t border-amber-500/20 pt-2">
-                <p className="text-[8px] font-bold uppercase tracking-widest text-amber-200/80">Notes</p>
-                <p className="line-clamp-2 text-[9px] leading-snug tracking-wide text-amber-100/90">{slide.speakerNotes}</p>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  return () => {
+    const el = document.getElementById(SCRIPT_ID);
+    if (el) el.remove();
+  };
 };
 
 const JobStatusTerminal = ({ loading, statusLines }) => {
@@ -192,7 +66,7 @@ const JobStatusTerminal = ({ loading, statusLines }) => {
           <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.7)]" />
           <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]" />
           <span className="ml-2 bg-gradient-to-r from-cyan-400 to-indigo-400 bg-clip-text text-[10px] font-mono font-bold uppercase tracking-[0.35em] text-transparent">
-            Slidea · neural build
+            Slidea · generative ui
           </span>
         </div>
         {loading ? (
@@ -241,6 +115,7 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   const fileInputRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const lastPolledStatusRef = useRef('');
+  const exportRootRef = useRef(null);
 
   const clearPollInterval = useCallback(() => {
     if (pollIntervalRef.current != null) {
@@ -250,6 +125,19 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
   }, []);
 
   useEffect(() => () => clearPollInterval(), [clearPollInterval]);
+
+  // Inject Tailwind CDN once on mount so runtime Tailwind classes compile
+  useEffect(() => {
+    const cleanup = injectTailwindCDN();
+    return cleanup;
+  }, []);
+
+  // Inject Google Fonts when the AI theme arrives
+  useEffect(() => {
+    if (!previewData?.theme) return;
+    const cleanup = injectGoogleFonts(previewData.theme.headingFont, previewData.theme.bodyFont);
+    return cleanup;
+  }, [previewData?.theme?.headingFont, previewData?.theme?.bodyFont]);
 
   const appendStatus = useCallback((line) => {
     setStatusLines((prev) => [...prev, { t: Date.now(), line }]);
@@ -394,8 +282,8 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
       return;
     }
 
-    const slidesLite = stripImageData(previewData.slides);
-    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nReturn JSON with "theme" (name, bgColor, primaryText, accentColor, fontFace hex 6-digit without # where colors) and "slides" array. Current slides only (revise to satisfy refinement):\n${JSON.stringify(slidesLite)}`;
+    const slidesLite = stripBase64ForRefinement(previewData.slides);
+    const streamPrompt = `${previewData.originalPrompt}\n\n--- User refinement ---\n${note}\n\nYou are revising an existing presentation. Return JSON with "theme" (name, backgroundColor, accentColor, headingFont, bodyFont) and "slides" array where each slide has "html" (raw Tailwind HTML filling 960x540) and "imageKeywords" (array, use {{IMAGE_1}} placeholder in HTML). Max 3 images. Here are the current slides:\n${JSON.stringify(slidesLite)}`;
 
     setRefineText('');
     await runJobGenerate({
@@ -415,22 +303,50 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     setExportLoading(true);
     setError('');
     try {
-      const blob = await exportPresentationBlob({
-        title: previewData.title,
-        slides: previewData.slides,
-        theme: previewData.theme,
-        prompt: previewData.originalPrompt || ''
-      });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const safe = (previewData.title || 'presentation').replace(/[^\w\s\-]+/g, '').replace(/\s+/g, '-') || 'presentation';
-      link.href = url;
-      link.download = `${safe}.pptx`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      setSuccess('PowerPoint downloaded.');
+      const root = exportRootRef.current;
+      if (!root) throw new Error('Export staging area not ready.');
+
+      // Allow Tailwind CDN time to compile classes in the export staging area
+      await new Promise((r) => setTimeout(r, 500));
+
+      if (document.fonts?.ready) {
+        await document.fonts.ready;
+      }
+
+      const nodes = root.querySelectorAll('.slide-export-capture');
+      if (!nodes.length) throw new Error('No slide frames found to capture.');
+
+      const pptx = new PptxGenJS();
+      pptx.layout = 'LAYOUT_16x9';
+
+      const exportBg = previewData.theme?.bg || previewData.theme?.backgroundColor || '#0b1220';
+
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        const canvas = await html2canvas(el, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: false,
+          backgroundColor: exportBg,
+          logging: false,
+          foreignObjectRendering: false,
+          onclone: (clonedDoc) => {
+            clonedDoc.querySelectorAll('.slide-export-capture').forEach((node) => {
+              node.style.backgroundColor = exportBg;
+            });
+          }
+        });
+        const dataUri = canvas.toDataURL('image/png');
+        const slideObj = pptx.addSlide();
+        slideObj.background = { data: dataUri };
+      }
+
+      const safe =
+        (previewData.title || 'Presentation').replace(/[^\w\s\-]+/g, '').replace(/\s+/g, '-').slice(0, 80) ||
+        'Presentation';
+      await pptx.writeFile({ fileName: `${safe}.pptx` });
+
+      setSuccess('PowerPoint downloaded — pixel-perfect from your on-screen design.');
       onPresentationGenerated?.({
         title: previewData.title,
         prompt: previewData.originalPrompt
@@ -451,10 +367,10 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     setRefineText('');
   };
 
-  const accent = previewData?.theme?.accent || '#6366f1';
+  const accent = previewData?.theme?.accent || previewData?.theme?.accentColor || '#6366f1';
 
   return (
-    <div className="relative min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 py-12 px-4 sm:px-6 lg:px-8">
+    <div className="relative min-h-screen py-12 px-4 sm:px-6 lg:px-8">
       <div
         className="pointer-events-none absolute inset-0 opacity-40"
         style={{
@@ -467,41 +383,41 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
           <h2 className="mb-4 text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl">
             Create presentations{' '}
             <span className="bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-400 bg-clip-text text-transparent">
-              at studio scale
+              with generative UI
             </span>
           </h2>
           <p className="mx-auto max-w-2xl text-lg leading-relaxed text-slate-400 sm:text-xl">
-            Job-based generation, live status, slide-accurate preview with charts — then export a polished .pptx.
+            AI writes raw HTML + Tailwind CSS from scratch for every slide. No templates. Infinite layout variance.
           </p>
         </div>
 
         {!previewData && (
-          <div className="mb-12 overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl shadow-indigo-950/50 backdrop-blur-xl">
+          <div className="mb-12 overflow-hidden bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white">
             <div className="p-8 sm:p-10">
               <form onSubmit={handleSubmit} className="space-y-8">
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wider">Presentation Title</label>
+                  <label className="block text-sm font-bold text-gray-200 mb-2 uppercase tracking-wider">Presentation Title</label>
                   <input
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="e.g., The Future of Personalized Learning"
-                    className="w-full px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:outline-none focus:border-indigo-500 focus:bg-white transition-all text-gray-900 font-medium"
+                    className="w-full px-5 py-4 bg-black/20 border border-white/20 rounded-2xl focus:outline-none focus:border-white/40 transition-all text-white placeholder:text-gray-200/50 font-medium backdrop-blur-xl"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wider">Describe Your Vision</label>
+                  <label className="block text-sm font-bold text-gray-200 mb-2 uppercase tracking-wider">Describe Your Vision</label>
                   <textarea
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     placeholder="Describe your startup, idea, or topic. Optional PDF adds research context."
-                    className="w-full h-48 px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:outline-none focus:border-indigo-500 focus:bg-white transition-all resize-none text-gray-900 font-medium leading-relaxed"
+                    className="w-full h-48 px-5 py-4 bg-black/20 border border-white/20 rounded-2xl focus:outline-none focus:border-white/40 transition-all resize-none text-white placeholder:text-gray-200/50 font-medium leading-relaxed backdrop-blur-xl"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wider">Source PDF (optional)</label>
+                  <label className="block text-sm font-bold text-gray-200 mb-2 uppercase tracking-wider">Source PDF (optional)</label>
                   <div
                     role="button"
                     tabIndex={0}
@@ -513,8 +429,8 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                     onDragLeave={handleDrag}
                     onDrop={handleDrop}
                     onClick={() => fileInputRef.current?.click()}
-                    className={`relative border-2 border-dashed rounded-2xl px-6 py-10 text-center cursor-pointer transition-all ${
-                      pdfFile ? 'border-emerald-400 bg-emerald-50/50' : 'border-gray-200 bg-gray-50/80 hover:border-indigo-300 hover:bg-indigo-50/30'
+                    className={`relative border border-dashed rounded-2xl px-6 py-10 text-center cursor-pointer transition-all bg-black/20 backdrop-blur-xl ${
+                      pdfFile ? 'border-emerald-300/60' : 'border-white/20 hover:border-white/35'
                     }`}
                   >
                     <input
@@ -524,15 +440,15 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                       className="hidden"
                       onChange={(e) => onPdfSelected(e.target.files?.[0])}
                     />
-                    <p className="text-gray-700 font-semibold">
+                    <p className="text-gray-200 font-semibold">
                       {pdfFile ? (
                         <>
-                          <span className="text-emerald-700">{pdfFile.name}</span>
-                          <span className="block text-sm font-normal text-gray-500 mt-1">Click to replace</span>
+                          <span className="text-emerald-200">{pdfFile.name}</span>
+                          <span className="block text-sm font-normal text-gray-200/70 mt-1">Click to replace</span>
                         </>
                       ) : (
                         <>
-                          Drag & drop a PDF here, or <span className="text-indigo-600">browse</span>
+                          Drag & drop a PDF here, or <span className="text-gray-200 underline underline-offset-4">browse</span>
                         </>
                       )}
                     </p>
@@ -552,18 +468,23 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                 </div>
 
                 <div>
-                  <p className="text-xs font-bold text-gray-500 mb-4 uppercase tracking-widest text-center">Or start with a template</p>
+                  <p className="text-xs font-bold text-gray-200/70 mb-4 uppercase tracking-widest text-center">Or start with a template</p>
                   <div className="flex flex-wrap justify-center gap-3">
                     {[
-                      { text: '📊 Startup Pitch', value: 'Create a professional startup pitch deck focusing on problem, solution, and market traction.' },
-                      { text: '🎓 EdTech Vision', value: 'A presentation for an EdTech platform covering education challenges and innovative solutions.' },
-                      { text: '💼 Business Plan', value: 'A comprehensive business growth strategy with market analysis and financial goals.' }
+                      { text: 'Startup Pitch', value: 'Create a professional startup pitch deck for a Series A SaaS company. Cover the problem, solution, market size, traction metrics, business model, and team.' },
+                      { text: 'AI & Technology', value: 'A cutting-edge presentation about artificial intelligence and its impact on software development, healthcare, and creative industries in 2026.' },
+                      { text: 'Corporate Strategy', value: 'A clean, professional quarterly business review for a Fortune 500 company with revenue metrics, market analysis, strategic initiatives, and next-quarter goals.' },
+                      { text: 'Healthy Eating', value: 'A warm, inviting presentation about plant-based nutrition, meal planning, and the science behind whole-food diets for everyday wellness.' },
+                      { text: 'EdTech Vision', value: 'A presentation for an EdTech platform that uses gamification and AI tutoring to personalize K-12 education and improve student outcomes.' },
+                      { text: 'Sustainability', value: 'An earth-toned presentation on corporate sustainability initiatives, carbon footprint reduction, renewable energy adoption, and ESG reporting.' },
+                      { text: 'Product Launch', value: 'A sleek product launch deck for a new consumer electronics device. Cover features, design philosophy, pricing tiers, and go-to-market strategy.' },
+                      { text: 'Travel & Culture', value: 'A vibrant presentation showcasing the top 10 travel destinations for 2026, with cultural highlights, cuisine, and adventure activities.' }
                     ].map((template, idx) => (
                       <button
                         key={idx}
                         type="button"
                         onClick={() => setPrompt(template.value)}
-                        className="px-5 py-2.5 bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-700 rounded-full text-sm font-bold transition-all transform hover:scale-105 active:scale-95"
+                        className="px-5 py-2.5 bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white text-sm font-bold transition-all transform hover:scale-105 active:scale-95 hover:bg-black/40"
                       >
                         {template.text}
                       </button>
@@ -574,28 +495,25 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                 <JobStatusTerminal loading={loading} statusLines={statusLines} />
 
                 {error && (
-                  <div className="text-red-500 flex flex-col items-center p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg">
-                    <span className="text-4xl mb-2">⚠️</span>
-                    <span className="font-bold">Generation Failed</span>
-                    <span className="text-sm opacity-80 mt-1">
+                  <div className="flex flex-col items-center p-4 bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white">
+                    <span className="font-bold text-red-200">Generation Failed</span>
+                    <span className="text-sm text-gray-200/80 mt-1">
                       {error?.message || error || 'Unknown Server Error'}
                     </span>
                   </div>
                 )}
 
                 {success && (
-                  <div className="p-4 bg-green-50 border-l-4 border-green-500 rounded-r-lg text-green-800 font-medium flex items-center">
-                    <span className="mr-3 text-xl">✅</span> {success}
+                  <div className="p-4 bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white font-medium flex items-center">
+                    <span className="text-emerald-200">{success}</span>
                   </div>
                 )}
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className={`w-full py-5 px-8 rounded-2xl font-black text-white text-xl uppercase tracking-widest shadow-xl transition-all transform active:scale-95 ${
-                    loading
-                      ? 'bg-gray-300 cursor-not-allowed overflow-hidden'
-                      : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:shadow-indigo-200 hover:scale-[1.02]'
+                  className={`w-full py-5 px-8 rounded-2xl font-black text-white text-xl uppercase tracking-widest transition-all transform active:scale-95 bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] ${
+                    loading ? 'opacity-60 cursor-not-allowed' : 'hover:bg-black/40 hover:scale-[1.02]'
                   }`}
                 >
                   {loading ? (
@@ -618,42 +536,84 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
               <div>
                 <h3 className="text-2xl font-black tracking-tight text-white">Deck preview</h3>
                 <p className="mt-1 font-medium text-slate-400">
-                  Theme{' '}
                   <span className="tracking-wide" style={{ color: accent }}>
-                    {previewData.themeName || 'Custom'}
+                    {previewData.themeName || 'Generative UI'}
                   </span>
+                  {previewData.designDNA?.globalStyle ? (
+                    <span className="text-slate-500"> · {previewData.designDNA.globalStyle}</span>
+                  ) : null}
+                  {previewData.theme?.headingFont ? (
+                    <span className="text-slate-600 text-xs"> · {previewData.theme.headingFont}</span>
+                  ) : null}
                   {previewData.title ? ` · ${previewData.title}` : ''}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={clearPreview}
-                className="self-start rounded-xl border border-white/20 bg-white/5 px-5 py-2.5 font-bold text-white backdrop-blur-sm transition-colors hover:bg-white/10"
+                className="self-start bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white px-5 py-2.5 font-bold transition-colors hover:bg-black/40"
               >
-                ← New deck
+                New deck
               </button>
             </div>
 
             <JobStatusTerminal loading={loading} statusLines={statusLines} />
 
             <div className="max-h-[72vh] space-y-6 overflow-y-auto pr-1">
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
                 {previewData.slides.map((slide, idx) => (
-                  <SlidePreviewCard
-                    key={idx}
-                    slide={slide}
-                    index={idx}
-                    accent={accent}
-                    primaryText={previewData.theme?.primaryText}
-                  />
+                  <div key={idx} className="bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white p-3">
+                    <div className="mb-2 flex items-center justify-between px-1">
+                      <span className="text-[10px] font-mono uppercase tracking-[0.25em] text-gray-200/70">
+                        Slide {idx + 1}
+                      </span>
+                      <span
+                        className="rounded-md border border-white/20 bg-black/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest"
+                        style={{ color: accent }}
+                      >
+                        generative
+                      </span>
+                    </div>
+                    <div
+                      className="overflow-hidden rounded-xl border border-white/20"
+                      style={{
+                        width: 432,
+                        height: 243,
+                        backgroundColor: previewData.theme?.bg || previewData.theme?.backgroundColor || '#0b1220'
+                      }}
+                    >
+                      <div
+                        className="origin-top-left"
+                        style={{ transform: 'scale(0.3375)', width: 1280, height: 720 }}
+                      >
+                        <PresentationViewer slide={slide} animate />
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
 
+            {/* Off-screen export staging — static capture, no animation */}
+            <div
+              ref={exportRootRef}
+              className="pointer-events-none fixed left-[-14000px] top-0 z-0 flex flex-col gap-10 py-8"
+              aria-hidden
+            >
+              {previewData.slides.map((slide, idx) => (
+                <div
+                  key={`export-${idx}`}
+                  className="slide-export-capture"
+                  style={{ backgroundColor: previewData.theme?.bg || previewData.theme?.backgroundColor || '#0b1220' }}
+                >
+                  <PresentationViewer slide={slide} animate={false} />
+                </div>
+              ))}
+            </div>
+
             {error && (
               <div className="text-red-200 flex flex-col items-center rounded-xl border border-red-500/40 bg-red-950/50 p-4 font-medium backdrop-blur-sm">
-                <span className="text-4xl mb-2">⚠️</span>
-                <span className="font-bold">Generation Failed</span>
+                <span className="font-bold">Error</span>
                 <span className="text-sm opacity-80 mt-1">
                   {error?.message || error || 'Unknown Server Error'}
                 </span>
@@ -665,12 +625,12 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
               </div>
             )}
 
-            <div className="flex flex-col items-stretch gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur-md sm:p-8 lg:flex-row lg:items-end">
+            <div className="flex flex-col items-stretch gap-4 bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white p-6 sm:p-8 lg:flex-row lg:items-end">
               <button
                 type="button"
                 disabled={exportLoading || loading}
                 onClick={handleExport}
-                className="flex-1 py-5 px-6 rounded-2xl font-black text-white text-lg uppercase tracking-widest shadow-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="flex-1 py-5 px-6 rounded-2xl font-black text-white text-lg uppercase tracking-widest bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] hover:bg-black/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >
                 {exportLoading ? 'Preparing file…' : 'Download PowerPoint'}
               </button>
@@ -680,14 +640,14 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
                   value={refineText}
                   onChange={(e) => setRefineText(e.target.value)}
                   placeholder="Want changes? Type them here…"
-                  className="flex-1 rounded-2xl border border-white/15 bg-slate-950/70 px-4 py-4 font-medium text-white placeholder:text-slate-500 focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="flex-1 rounded-2xl border border-white/20 bg-black/20 px-4 py-4 font-medium text-white placeholder:text-gray-200/50 focus:border-white/40 focus:outline-none focus:ring-2 focus:ring-white/10 backdrop-blur-xl"
                   disabled={loading}
                 />
                 <button
                   type="button"
                   disabled={loading}
                   onClick={handleRefine}
-                  className="px-8 py-4 rounded-2xl font-black uppercase tracking-wider text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                  className="px-8 py-4 rounded-2xl font-black uppercase tracking-wider text-white bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] hover:bg-black/40 disabled:opacity-50 whitespace-nowrap"
                 >
                   Update
                 </button>
@@ -700,19 +660,19 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
           <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
             {[
               {
-                icon: '👁️',
-                title: 'Preview first',
-                desc: '16:9 slide frames, charts, and glass layouts before export.'
+                icon: '🧠',
+                title: 'Generative UI Engine',
+                desc: 'AI writes raw HTML + Tailwind CSS from scratch for every slide. No static templates — infinite layout variance.'
               },
               {
-                icon: '✏️',
-                title: 'Refine with AI',
-                desc: 'Natural-language passes; schema-safe slides including chart data.'
+                icon: '🖼️',
+                title: 'Base64 Image Pipeline',
+                desc: 'Images fetched server-side and injected as Base64 data URIs. CORS tainting permanently eliminated.'
               },
               {
                 icon: '📥',
-                title: 'Export on demand',
-                desc: 'Native PPTX with pptxgenjs charts, auto-fit text, and your theme.'
+                title: 'Flawless Export',
+                desc: 'html2canvas captures AI-generated DOM with embedded images. Pixel-perfect PowerPoint every time.'
               }
             ].map((feature, idx) => (
               <div

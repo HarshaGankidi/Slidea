@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
 const { PDFParse } = require('pdf-parse');
-const { generatePresentationContent, createPowerPointBuffer } = require('../services/presentationService');
+const { generatePresentationContent } = require('../services/presentationService');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -42,6 +42,7 @@ const runGenerationJob = (jobId, { prompt, titleRaw, pdfBuffer }) => {
       title: generatedTitle,
       slides: content.slides,
       theme: content.theme,
+      designDNA: content.designDNA || null,
       themeName: content.themeName,
       originalPrompt: content.originalPrompt || prompt
     };
@@ -131,83 +132,13 @@ const presentationController = {
     });
   },
 
-  exportPresentation: async (req, res) => {
-    try {
-      console.log('🚀 [EXPORT] Starting PowerPoint generation (controller)...');
-      const { title, slides, theme, prompt: promptBody } = req.body || {};
-      const promptForDb = typeof promptBody === 'string' ? promptBody.trim() : '';
-
-      if (!Array.isArray(slides) || slides.length === 0) {
-        console.log('❌ [EXPORT] Rejected: empty or missing slides array.');
-        return res.status(400).json({
-          success: false,
-          message: 'Request body must include a non-empty slides array'
-        });
-      }
-
-      const displayTitle =
-        typeof title === 'string' && title.trim() ? title.trim() : 'Untitled Presentation';
-
-      console.log(
-        `📥 [EXPORT] Request OK — title="${displayTitle}", slides=${slides.length}, theme=${theme ? 'yes' : 'no'}`
-      );
-
-      const content = {
-        title: displayTitle,
-        slides,
-        theme: theme && typeof theme === 'object' ? theme : undefined
-      };
-
-      console.log('⏳ [EXPORT] Invoking createPowerPointBuffer (service)...');
-      const buffer = await createPowerPointBuffer(content);
-      const nodeBuf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-      console.log(`📊 [EXPORT] PPTX buffer received (${nodeBuf.length} bytes).`);
-
-      const presentationId = crypto.randomBytes(8).toString('hex');
-      const filename = `presentation_${presentationId}.pptx`;
-      const filePath = path.join(presentationsDir, filename);
-
-      console.log(`💾 [EXPORT] Persisting copy to disk: ${filename}`);
-      await fs.promises.writeFile(filePath, nodeBuf);
-
-      try {
-        const query = `
-          INSERT INTO presentations (id, title, prompt, filename, created_at)
-          VALUES ($1, $2, $3, $4, NOW())
-          RETURNING *;
-        `;
-        await pool.query(query, [
-          presentationId,
-          displayTitle,
-          promptForDb || '(exported deck)',
-          filename
-        ]);
-        console.log(`✅ [EXPORT] Database row saved (id=${presentationId}).`);
-      } catch (dbError) {
-        console.error('❌ [EXPORT] Saved to disk but database insert failed:', dbError.message);
-      }
-
-      const rawName = displayTitle;
-      const safeName = rawName.replace(/[^\w\s\-]+/g, '').replace(/\s+/g, '-').slice(0, 80) || 'slidea-presentation';
-
-      res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-      );
-      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`);
-      console.log(`📤 [EXPORT] Sending PPTX to client as "${safeName}.pptx"...`);
-      res.send(nodeBuf);
-      console.log('✅ [EXPORT] PowerPoint successfully built and sent to client.');
-    } catch (error) {
-      console.error('❌ [EXPORT] EXPORT ERROR:', error);
-      console.error(error?.stack);
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          message: error.message || 'Failed to export presentation'
-        });
-      }
-    }
+  /** @deprecated Server-side PPTX export removed — build .pptx in the browser (html2canvas + pptxgenjs). */
+  exportPresentation: async (_req, res) => {
+    return res.status(410).json({
+      success: false,
+      message:
+        'Export has moved to the client. Use the in-app Download PowerPoint button (HTML/CSS capture).'
+    });
   },
 
   getPresentationHistory: async (req, res) => {
