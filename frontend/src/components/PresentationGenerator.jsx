@@ -367,32 +367,132 @@ const PresentationGenerator = ({ onPresentationGenerated }) => {
     setRefineText('');
   };
 
-  const accent = previewData?.theme?.accent || previewData?.theme?.accentColor || '#6366f1';
+  const accent = previewData?.theme?.accent || previewData?.theme?.accentColor || '#34d399';
+  const CYBER_GREEN = '#34d399';
 
   return (
-    <div className="relative min-h-screen py-12 px-4 sm:px-6 lg:px-8">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-40"
-        style={{
-          backgroundImage:
-            'radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.35), transparent), radial-gradient(ellipse 60% 40% at 100% 50%, rgba(236,72,153,0.12), transparent)'
-        }}
-      />
-      <div className={`relative z-10 mx-auto ${previewData ? 'max-w-6xl' : 'max-w-4xl'}`}>
-        <div className="mb-12 text-center">
-          <h2 className="mb-4 text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl">
-            Create presentations{' '}
-            <span className="bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-400 bg-clip-text text-transparent">
-              with generative UI
-            </span>
-          </h2>
-          <p className="mx-auto max-w-2xl text-lg leading-relaxed text-slate-400 sm:text-xl">
-            AI writes raw HTML + Tailwind CSS from scratch for every slide. No templates. Infinite layout variance.
-          </p>
-        </div>
+    <div className="relative min-h-screen py-10 px-4 sm:px-6 lg:px-8">
+      <div className={`relative z-10 mx-auto ${previewData ? 'max-w-7xl' : 'max-w-7xl'}`}>
+        {/* STRICT 12-COLUMN HERO (reference-matched) */}
+        {!previewData && (
+          <section className="mb-10">
+            <div className="grid grid-cols-12 w-full h-full bg-[#070b12]/70 backdrop-blur-xl border border-white/15 shadow-[0_20px_60px_rgba(0,0,0,0.45)] rounded-[28px] overflow-hidden">
+              <div className="col-span-12 p-6 sm:p-8 border-b border-white/10">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black uppercase tracking-[0.38em] text-emerald-200/85">
+                      Support Hub
+                    </span>
+                    <span className="rounded-full bg-emerald-500/15 border border-emerald-300/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.28em] text-emerald-200/80">
+                      Enterprise Support
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono uppercase tracking-[0.25em] text-gray-200/60">
+                    12‑column grid
+                  </span>
+                </div>
+              </div>
+
+              <div className="col-span-12 p-16 sm:p-20">
+                <div className="grid grid-cols-12 gap-10 items-start">
+                  {/* LEFT: 8 columns */}
+                  <div className="col-span-12 lg:col-span-8">
+                    <h1 className="text-[44px] sm:text-[56px] lg:text-[64px] font-black tracking-tight leading-[0.95] text-white max-w-4xl text-wrap break-words">
+                      Welcome to <span style={{ color: CYBER_GREEN }}>My Webpage</span>
+                    </h1>
+                    <p className="mt-6 text-lg sm:text-xl leading-relaxed text-gray-200/75 max-w-3xl text-wrap break-words">
+                      A premium workspace where your ideas become export‑ready presentations—built with safe layouts,
+                      reliable visuals, and a consistent cyber‑green hierarchy.
+                    </p>
+
+                    <div className="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-4xl">
+                      {[
+                        { title: 'Faster workflow', body: 'Generate a full deck structure in minutes with strict layout safe‑zones.' },
+                        { title: 'Secure by design', body: 'Server‑side image injection prevents CORS issues and broken exports.' },
+                        { title: 'Live insights', body: 'Metrics and highlights are formatted consistently for executive readability.' },
+                        { title: 'Multi‑channel ready', body: 'Export to PowerPoint with pixel‑perfect capture and high‑contrast UI.' }
+                      ].map((f) => (
+                        <div
+                          key={f.title}
+                          className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-[0_10px_30px_rgba(0,0,0,0.35)]"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="mt-1 h-9 w-9 rounded-xl bg-emerald-500/15 border border-emerald-300/20 grid place-items-center">
+                              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: CYBER_GREEN }} />
+                            </div>
+                            <div>
+                              <p className="text-sm font-black uppercase tracking-[0.22em]" style={{ color: CYBER_GREEN }}>
+                                {f.title}
+                              </p>
+                              <p className="mt-2 text-sm leading-relaxed text-gray-200/70 max-w-xl text-wrap break-words">
+                                {f.body}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-10 flex flex-col sm:flex-row gap-4">
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('generator-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                        className="rounded-2xl px-6 py-4 text-xs font-black uppercase tracking-[0.28em] text-black shadow-[0_18px_40px_rgba(52,211,153,0.18)]"
+                        style={{ backgroundColor: CYBER_GREEN }}
+                      >
+                        Get started
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-2xl px-6 py-4 text-xs font-black uppercase tracking-[0.28em] text-white bg-white/5 border border-white/15 hover:bg-white/10 transition-all"
+                      >
+                        View examples
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* RIGHT: 4 columns (Side Box) */}
+                  <div className="col-span-12 lg:col-start-9 lg:col-span-4">
+                    <div className="bg-black/30 backdrop-blur-xl border border-white/15 shadow-[0_20px_70px_rgba(0,0,0,0.55)] rounded-[28px] overflow-hidden">
+                      <div className="p-6 border-b border-white/10">
+                        <p className="text-[10px] font-black uppercase tracking-[0.35em]" style={{ color: CYBER_GREEN }}>
+                          Workspace preview
+                        </p>
+                        <p className="mt-3 text-sm leading-relaxed text-gray-200/70 text-wrap break-words max-w-md">
+                          A snapshot of the dashboard you’ll use after login. Metrics are generated from prompts and AI suggestions.
+                        </p>
+                      </div>
+                      <div className="p-6 grid grid-cols-2 gap-4">
+                        {[
+                          { label: 'Decks today', value: '24' },
+                          { label: 'Auto‑styled', value: '82%' },
+                          { label: 'Export time', value: '9m' },
+                          { label: 'Quality score', value: '4.9/5' }
+                        ].map((m) => (
+                          <div key={m.label} className="bg-white/5 border border-white/10 rounded-2xl p-4">
+                            <p className="text-[10px] font-black uppercase tracking-[0.28em] text-gray-200/60">
+                              {m.label}
+                            </p>
+                            <p className="mt-3 text-2xl font-black text-white tabular-nums">{m.value}</p>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="col-span-2 mt-2 rounded-2xl px-5 py-4 text-xs font-black uppercase tracking-[0.28em] text-white bg-white/10 border border-white/15 hover:bg-white/15 transition-all"
+                        >
+                          Get started — Login
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         {!previewData && (
-          <div className="mb-12 overflow-hidden bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white">
+          <div id="generator-form" className="mb-12 overflow-hidden bg-black/30 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] rounded-2xl text-white">
             <div className="p-8 sm:p-10">
               <form onSubmit={handleSubmit} className="space-y-8">
                 <div>
